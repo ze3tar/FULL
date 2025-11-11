@@ -1,0 +1,10 @@
+numpy==1.26.4
+matplotlib
+torch
+torchvision
+gymnasium[classic-control]
+stable-baselines3
+pandas
+tqdm
+opencv-python
+shapely

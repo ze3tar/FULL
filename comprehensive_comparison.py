@@ -222,13 +222,22 @@ class PlanningBenchmark:
             radius = float(item[1]) / 100.0
             q_obstacles.append((pad_vec(center, DESIRED_DIM), radius))
 
-        # Instantiate planner
-        planner = RLEnhancedAPF_RRT()
-        path, nodes, plan_time, metrics = planner.plan(
-            q_start, q_goal, q_obstacles, max_iters=8000
-        )
-
-        success = path is not None
+        # Instantiate planner without requiring a trained agent.  When the agent
+        # is missing the planner raises a clear ValueError which we interpret as
+        # a failed trial (the benchmark should keep running for other planners).
+        planner = RLEnhancedAPF_RRT(agent=None)
+        try:
+            path, nodes, plan_time, metrics = planner.plan(
+                q_start, q_goal, q_obstacles, max_iters=8000
+            )
+            success = path is not None
+        except ValueError as exc:
+            success = False
+            plan_time = float('nan')
+            metrics = {}
+            nodes = []
+            path = None
+            _ = exc  # Planner requires an agent; absence is handled as failure.
 
         # Convert back to original scale
         if success:
