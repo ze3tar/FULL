@@ -1,539 +1,897 @@
 #!/usr/bin/env python3
+"""RL-enhanced APF-RRT planner.
+
+This module provides everything that is required to train, evaluate and
+visualise an artificial potential field (APF) guided RRT motion planner in a
+stand-alone environment.  The code is structured so it can be dropped into a
+Google Colab notebook without modifications – all heavy imports are guarded and
+GPU support is automatically detected.
+
+Key features
+------------
+* Clean separation between environment dynamics, RL training utilities and
+  evaluation helpers.
+* Efficient vectorised state computations to keep the Gym environment light.
+* Optional multi-processing vectorised environments for faster PPO training on
+  Colab (or locally).
+* Matplotlib based 3D visualisation of the explored tree and final path.
+* Command line interface supporting ``train`` and ``test`` modes.
+
+The environment models a 6-DoF configuration space.  The first three joints are
+used when rendering 3D plots which is sufficient to understand exploration
+behaviour while keeping the visualisation legible.
 """
-RL-Enhanced APF-RRT Planner using PPO (Proximal Policy Optimization)
-Learns optimal APF parameters and sampling strategies for improved performance
-"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import gymnasium as gym
-from gymnasium import spaces
 import torch
-import torch.nn as nn
+from gymnasium import Env, spaces
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
-import time
-import pickle
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-# Import your baseline APF-RRT
-import sys
-sys.path.append('.')
-from config_space_apf_rrt import ConfigSpaceAPF_RRT
+# Matplotlib is an optional dependency; importing lazily keeps the module usable
+# without it (e.g. on headless Colab runtimes before ``pip install matplotlib``).
+try:  # pragma: no cover - optional dependency
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D projection)
+except Exception:  # pragma: no cover - optional dependency
+    plt = None
 
 
-class APF_RRT_Environment(gym.Env):
+# ---------------------------------------------------------------------------
+# Configuration dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PlannerParameters:
+    """Tunables for the APF-RRT planner.
+
+    The RL agent learns increments on top of these parameters.  Bounds are used
+    both when sampling actions inside the environment and when applying the
+    trained agent during deployment.
     """
-    Gym environment for training RL agent to optimize APF-RRT parameters
-    """
-    metadata = {'render.modes': ['human']}
-    
-    def __init__(self, difficulty='medium', max_steps=100):
-        super(APF_RRT_Environment, self).__init__()
-        
-        self.difficulty = difficulty
-        self.max_steps = max_steps
-        self.current_step = 0
-        
-        # State space: [distance_to_goal, angle_to_goal, min_obstacle_dist,
-        #                obstacle_density, K_att, K_rep, d0, step_size, nodes_count]
-        self.observation_space = spaces.Box(
-            low=np.array([0, -np.pi, 0, 0, 0.1, 0.05, 0.5, 0.1, 0]),
-            high=np.array([10, np.pi, 5, 1.0, 5.0, 2.0, 3.0, 1.0, 5000]),
-            dtype=np.float32
+
+    attractive_gain: float = 1.0
+    repulsive_gain: float = 0.3
+    influence_distance: float = 1.5
+    step_size: float = 0.3
+    goal_bias: float = 0.07
+
+    attractive_range: Tuple[float, float] = (0.1, 6.0)
+    repulsive_range: Tuple[float, float] = (0.05, 3.0)
+    influence_range: Tuple[float, float] = (0.5, 3.5)
+    step_range: Tuple[float, float] = (0.1, 1.2)
+    goal_bias_range: Tuple[float, float] = (0.0, 0.4)
+
+    def apply_delta(self, delta: Sequence[float]) -> None:
+        """Apply an action delta and clamp to configured ranges."""
+
+        (da, dr, dd, ds, db) = delta
+        self.attractive_gain = np.clip(
+            self.attractive_gain + da, *self.attractive_range
         )
-        
-        # Action space: [delta_K_att, delta_K_rep, delta_d0, delta_step_size, goal_bias]
+        self.repulsive_gain = np.clip(
+            self.repulsive_gain + dr, *self.repulsive_range
+        )
+        self.influence_distance = np.clip(
+            self.influence_distance + dd, *self.influence_range
+        )
+        self.step_size = np.clip(self.step_size + ds, *self.step_range)
+        self.goal_bias = np.clip(self.goal_bias + db, *self.goal_bias_range)
+
+    def to_array(self) -> np.ndarray:
+        return np.array(
+            [
+                self.attractive_gain,
+                self.repulsive_gain,
+                self.influence_distance,
+                self.step_size,
+                self.goal_bias,
+            ],
+            dtype=np.float32,
+        )
+
+
+@dataclass
+class ScenarioConfig:
+    """Random scenario generator options."""
+
+    difficulty: str = "medium"  # easy / medium / hard
+    max_steps: int = 128
+    joint_min: float = -math.pi
+    joint_max: float = math.pi
+    n_joints: int = 6
+    goal_tolerance: float = 0.18
+    dynamic_probability: float = 0.45
+    obstacle_speed_range: Tuple[float, float] = (0.05, 0.35)
+    dynamic_time_step: float = 0.08
+
+    @property
+    def obstacle_count(self) -> int:
+        return {"easy": 2, "medium": 4, "hard": 6}[self.difficulty]
+
+    def sample_configuration(self, rng: np.random.Generator) -> np.ndarray:
+        return rng.uniform(self.joint_min, self.joint_max, self.n_joints)
+
+
+@dataclass
+class ObstacleState:
+    """State of an obstacle in joint space."""
+
+    centre: np.ndarray
+    radius: float
+    velocity: np.ndarray
+
+    def copy(self) -> "ObstacleState":
+        return ObstacleState(self.centre.copy(), float(self.radius), self.velocity.copy())
+
+    def advance(self, joint_min: float, joint_max: float, dt: float) -> None:
+        """Integrate obstacle motion with reflective boundaries."""
+
+        self.centre += self.velocity * dt
+        for idx, value in enumerate(self.centre):
+            if value < joint_min:
+                overflow = joint_min - value
+                self.centre[idx] = joint_min + overflow
+                self.velocity[idx] *= -1
+            elif value > joint_max:
+                overflow = value - joint_max
+                self.centre[idx] = joint_max - overflow
+                self.velocity[idx] *= -1
+
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+
+Obstacle = ObstacleState
+
+
+class APFRRTEnv(Env):
+    """Gymnasium environment exposing APF-RRT planning dynamics."""
+
+    metadata = {"render_modes": ["human"]}
+
+    def __init__(
+        self,
+        scenario: ScenarioConfig,
+        parameters: Optional[PlannerParameters] = None,
+        seed: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        self.scenario = scenario
+        self.parameters = parameters or PlannerParameters()
+        self.rng = np.random.default_rng(seed)
+
+        # Observation encodes planner state + tunables so PPO can correlate them
+        # with progress: distance, heading, obstacle info, parameter vector.
+        low = np.array(
+            [0.0, -1.0, 0.0, 0.0] + [p[0] for p in self._parameter_bounds()],
+            dtype=np.float32,
+        )
+        high = np.array(
+            [1.0, 1.0, 1.0, 1.0] + [p[1] for p in self._parameter_bounds()],
+            dtype=np.float32,
+        )
+        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+
+        # Action is applied as small parameter deltas.
         self.action_space = spaces.Box(
-            low=np.array([-0.5, -0.3, -0.5, -0.2, -0.1]),
-            high=np.array([0.5, 0.3, 0.5, 0.2, 0.1]),
-            dtype=np.float32
+            low=np.array([-0.4, -0.4, -0.5, -0.25, -0.15], dtype=np.float32),
+            high=np.array([0.4, 0.4, 0.5, 0.25, 0.15], dtype=np.float32),
         )
-        
-        # APF parameters (will be adjusted by RL)
-        self.K_att = 1.0
-        self.K_rep = 0.3
-        self.d0 = 1.5
-        self.step_size = 0.3
-        self.goal_bias = 0.07
-        
-        # Planning state
-        self.q_current = None
-        self.q_goal = None
-        self.obstacles = []
-        self.nodes = []
-        self.path_length = 0
-        self.planning_time = 0
-        
-        self._setup_environment()
-    
-    def _setup_environment(self):
-        """Generate random planning scenario based on difficulty"""
-        # Random start and goal configurations (6-DOF)
-        self.q_start = np.random.uniform(-np.pi, np.pi, 6)
-        self.q_goal = np.random.uniform(-np.pi, np.pi, 6)
+
+        self.q_start: np.ndarray = np.zeros(self.scenario.n_joints)
+        self.q_goal: np.ndarray = np.zeros(self.scenario.n_joints)
+        self.q_current: np.ndarray = np.zeros(self.scenario.n_joints)
+        self.obstacles: List[Obstacle] = []
+        self._dynamic_active = False
+        self.nodes: List[np.ndarray] = []
+        self._step_index = 0
+
+        self.reset()
+
+    # -- Env API -----------------------------------------------------------
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
+        super().reset(seed=seed)
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+
+        self.parameters = PlannerParameters()
+        self._dynamic_active = self.rng.random() < self.scenario.dynamic_probability
+        self.q_start = self.scenario.sample_configuration(self.rng)
+        self.q_goal = self.scenario.sample_configuration(self.rng)
         self.q_current = self.q_start.copy()
-        
-        # Generate obstacles based on difficulty
-        n_obstacles = {'easy': 2, 'medium': 4, 'hard': 6}[self.difficulty]
-        self.obstacles = self._generate_obstacles(n_obstacles)
-        
-        # Reset metrics
-        self.nodes = [self.q_start]
-        self.path_length = 0
-        self.planning_time = 0
-    
-    def _generate_obstacles(self, n):
-        """Generate random obstacle positions in configuration space"""
-        obstacles = []
-        for _ in range(n):
-            # Random configuration that's an obstacle
-            q_obs = np.random.uniform(-np.pi, np.pi, 6)
-            radius = np.random.uniform(0.3, 0.8)
-            obstacles.append((q_obs, radius))
-        return obstacles
-    
-    def _get_state(self):
-        """Compute current state for RL agent"""
-        # Distance to goal in config space
-        d_to_goal = np.linalg.norm(self.q_current - self.q_goal)
-        
-        # Angle to goal (using first 3 joints for direction)
-        v_to_goal = self.q_goal[:3] - self.q_current[:3]
-        angle_to_goal = np.arctan2(v_to_goal[1], v_to_goal[0])
-        
-        # Minimum obstacle distance
-        min_obs_dist = min([np.linalg.norm(self.q_current - q_obs) - r 
-                           for q_obs, r in self.obstacles] + [10.0])
-        
-        # Obstacle density (obstacles within influence distance)
-        nearby_obstacles = sum([1 for q_obs, r in self.obstacles 
-                               if np.linalg.norm(self.q_current - q_obs) < self.d0])
-        obstacle_density = nearby_obstacles / max(len(self.obstacles), 1)
-        
-        # Current parameters
-        state = np.array([
-            d_to_goal / 10.0,        # Normalized
-            angle_to_goal / np.pi,
-            min_obs_dist / 5.0,
-            obstacle_density,
-            self.K_att,
-            self.K_rep,
-            self.d0,
-            self.step_size,
-            len(self.nodes) / 1000.0  # Normalized node count
-        ], dtype=np.float32)
-        
-        return state
-    
-    def _compute_apf_force(self):
-        """Compute APF forces with current parameters"""
-        # Attractive force
-        v_att = self.q_goal - self.q_current
-        d_att = np.linalg.norm(v_att)
-        F_att = (self.K_att * (v_att / (d_att + 1e-9))) if d_att > 0 else np.zeros(6)
-        
-        # Repulsive force
-        F_rep = np.zeros(6)
-        for q_obs, r in self.obstacles:
-            v_obs = self.q_current - q_obs
-            d_obs = np.linalg.norm(v_obs) - r
-            
-            if d_obs <= self.d0 and d_obs > 1e-6:
-                mag = self.K_rep * (1.0 / (d_obs ** 2)) * (1.0/d_obs - 1.0/self.d0)
-                F_rep += mag * (v_obs / (np.linalg.norm(v_obs) + 1e-9))
-        
-        return F_att + F_rep
-    
-    def _check_collision(self, q):
-        """Check if configuration collides with obstacles"""
-        for q_obs, r in self.obstacles:
-            if np.linalg.norm(q - q_obs) < r:
-                return True
-        return False
-    
-    def step(self, action):
-        """Execute one planning step with RL-adjusted parameters"""
-        self.current_step += 1
-        
-        # Apply RL action to adjust parameters
-        self.K_att = np.clip(self.K_att + action[0], 0.1, 5.0)
-        self.K_rep = np.clip(self.K_rep + action[1], 0.05, 2.0)
-        self.d0 = np.clip(self.d0 + action[2], 0.5, 3.0)
-        self.step_size = np.clip(self.step_size + action[3], 0.1, 1.0)
-        self.goal_bias = np.clip(self.goal_bias + action[4], 0.0, 0.3)
-        
-        # Sample next configuration (goal-biased)
-        if np.random.random() < self.goal_bias:
-            q_rand = self.q_goal
-        else:
-            q_rand = np.random.uniform(-np.pi, np.pi, 6)
-        
-        # Find nearest node
-        distances = [np.linalg.norm(n - q_rand) for n in self.nodes]
-        q_near = self.nodes[np.argmin(distances)]
-        
-        # Compute direction with APF
-        F_total = self._compute_apf_force()
-        v_rand = q_rand - q_near
-        v_rand_unit = v_rand / (np.linalg.norm(v_rand) + 1e-9)
-        v_goal = self.q_goal - q_near
-        v_goal_unit = v_goal / (np.linalg.norm(v_goal) + 1e-9)
-        
-        # Combine directions (weighted)
-        combined = 0.5 * v_rand_unit + 0.3 * v_goal_unit + 0.2 * (F_total / (np.linalg.norm(F_total) + 1e-9))
-        direction = combined / (np.linalg.norm(combined) + 1e-9)
-        
-        # Generate new configuration
-        q_new = q_near + direction * self.step_size
-        q_new = np.clip(q_new, -np.pi, np.pi)  # Joint limits
-        
-        # Compute reward
-        reward = 0
+        self.nodes = [self.q_start.copy()]
+        self.obstacles = self._generate_obstacles(self.scenario.obstacle_count)
+        self._step_index = 0
+        return self._get_state(), {}
+
+    def step(self, action: np.ndarray):
+        step_start = time.perf_counter()
+        self._step_index += 1
+        self.parameters.apply_delta(action)
+
+        q_rand = self._sample_random_configuration()
+        idx_near, q_near = self._find_nearest_node(q_rand)
+
+        direction = self._compute_direction(q_near, q_rand)
+        q_new = np.clip(
+            q_near + direction * self.parameters.step_size,
+            self.scenario.joint_min,
+            self.scenario.joint_max,
+        )
+
         done = False
-        
-        # Check collision
-        if self._check_collision(q_new):
-            reward -= 5  # Collision penalty
+        truncated = False
+        info: Dict[str, float] = {}
+        reward = -0.1  # default time penalty
+        collision_flag = False
+
+        if self._in_collision(q_new):
+            reward -= 5.0
+            collision_flag = True
         else:
-            # Add node
             self.nodes.append(q_new)
             self.q_current = q_new
-            
-            # Progress reward
+
             old_dist = np.linalg.norm(q_near - self.q_goal)
             new_dist = np.linalg.norm(q_new - self.q_goal)
             progress = old_dist - new_dist
-            reward += 10 * progress
-            
-            # Check if goal reached
-            if new_dist < 0.2:
-                reward += 100  # Success bonus
+            reward += 9.0 * progress
+
+            min_clearance = self._minimum_clearance(q_new)
+            reward += 2.0 * math.tanh(max(min_clearance - 0.1, 0.0))
+
+            if new_dist < self.scenario.goal_tolerance:
+                reward += 120.0
                 done = True
-                
-            # Efficiency rewards
-            reward -= 0.01 * len(self.nodes)  # Penalize too many nodes
-            
-            # Obstacle clearance bonus
-            min_clearance = min([np.linalg.norm(q_new - q_obs) - r 
-                                for q_obs, r in self.obstacles] + [10.0])
-            if min_clearance > 0:
-                reward += 2 * np.tanh(min_clearance)
-        
-        # Time penalty
-        reward -= 0.1
-        
-        # Episode termination conditions
-        if self.current_step >= self.max_steps:
+                info["reached_goal"] = 1.0
+
+        reward -= 0.01 * len(self.nodes)
+
+        if collision_flag:
+            info["collision"] = 1.0
+
+        if self._step_index >= self.scenario.max_steps and not done:
             done = True
-            if np.linalg.norm(self.q_current - self.q_goal) > 0.5:
-                reward -= 50  # Failed to reach goal
-        
-        state = self._get_state()
-        info = {
-            'nodes': len(self.nodes),
-            'distance_to_goal': np.linalg.norm(self.q_current - self.q_goal),
-            'K_att': self.K_att,
-            'K_rep': self.K_rep
-        }
-        
-        return state, reward, done, False, info
-    
-    def reset(self, seed=None, options=None):
-        """Reset environment for new episode"""
-        super().reset(seed=seed)
-        self.current_step = 0
-        self._setup_environment()
-        return self._get_state(), {}
-    
-    def render(self, mode='human'):
-        """Render current state (optional)"""
-        pass
+            truncated = True
+            info["timeout"] = 1.0
+            reward -= 40.0
+
+        self._advance_obstacles()
+
+        info["clearance"] = float(self._minimum_clearance(self.q_current))
+        info["dynamic"] = float(self._dynamic_active)
+        info["nearest_index"] = float(idx_near)
+        info["step_ms"] = float((time.perf_counter() - step_start) * 1_000.0)
+        return self._get_state(), reward, done, truncated, info
+
+    def render(self):  # pragma: no cover - simple debug rendering
+        print(
+            f"Step {self._step_index} – dist_to_goal: {np.linalg.norm(self.q_current - self.q_goal):.3f} "
+            f"nodes: {len(self.nodes)}"
+        )
+
+    # -- Planning utilities ------------------------------------------------
+    def _parameter_bounds(self) -> List[Tuple[float, float]]:
+        params = self.parameters
+        return [
+            params.attractive_range,
+            params.repulsive_range,
+            params.influence_range,
+            params.step_range,
+            params.goal_bias_range,
+        ]
+
+    def _generate_obstacles(self, n: int) -> List[Obstacle]:
+        obstacles: List[Obstacle] = []
+        for _ in range(n):
+            centre = self.scenario.sample_configuration(self.rng)
+            radius = float(self.rng.uniform(0.3, 0.8))
+            if self._dynamic_active and self.scenario.obstacle_speed_range[1] > 0:
+                direction = self.rng.normal(size=self.scenario.n_joints)
+                direction /= np.linalg.norm(direction) + 1e-9
+                speed = self.rng.uniform(*self.scenario.obstacle_speed_range)
+                velocity = direction * speed
+            else:
+                velocity = np.zeros(self.scenario.n_joints)
+            obstacles.append(ObstacleState(centre, radius, velocity))
+        return obstacles
+
+    def _sample_random_configuration(self) -> np.ndarray:
+        if self.rng.random() < self.parameters.goal_bias:
+            return self.q_goal
+        return self.scenario.sample_configuration(self.rng)
+
+    def _find_nearest_node(self, target: np.ndarray) -> Tuple[int, np.ndarray]:
+        dists = [np.linalg.norm(node - target) for node in self.nodes]
+        index = int(np.argmin(dists))
+        return index, self.nodes[index]
+
+    def _compute_direction(self, q_near: np.ndarray, q_rand: np.ndarray) -> np.ndarray:
+        total_force = self._apf_force(q_near)
+        towards_rand = q_rand - q_near
+        towards_goal = self.q_goal - q_near
+
+        components = np.stack(
+            [
+                towards_rand / (np.linalg.norm(towards_rand) + 1e-9),
+                towards_goal / (np.linalg.norm(towards_goal) + 1e-9),
+                total_force / (np.linalg.norm(total_force) + 1e-9),
+            ]
+        )
+        weights = np.array([0.45, 0.35, 0.20], dtype=np.float32)
+        direction = (weights[:, None] * components).sum(axis=0)
+        return direction / (np.linalg.norm(direction) + 1e-9)
+
+    def _apf_force(self, q: np.ndarray) -> np.ndarray:
+        params = self.parameters
+        v_att = self.q_goal - q
+        d_att = np.linalg.norm(v_att)
+        f_att = params.attractive_gain * (v_att / (d_att + 1e-9)) if d_att > 0 else np.zeros_like(q)
+
+        f_rep = np.zeros_like(q)
+        for obstacle in self.obstacles:
+            diff = q - obstacle.centre
+            dist = np.linalg.norm(diff) - obstacle.radius
+            if 0.0 < dist <= params.influence_distance:
+                magnitude = params.repulsive_gain * ((1.0 / dist**2) * (1.0 / dist - 1.0 / params.influence_distance))
+                f_rep += magnitude * (diff / (np.linalg.norm(diff) + 1e-9))
+        return f_att + f_rep
+
+    def _minimum_clearance(self, q: np.ndarray) -> float:
+        distances = [np.linalg.norm(q - obstacle.centre) - obstacle.radius for obstacle in self.obstacles]
+        return min(distances) if distances else 10.0
+
+    def _in_collision(self, q: np.ndarray) -> bool:
+        return any(np.linalg.norm(q - obstacle.centre) < obstacle.radius for obstacle in self.obstacles)
+
+    def _advance_obstacles(self) -> None:
+        if not self._dynamic_active:
+            return
+        for obstacle in self.obstacles:
+            obstacle.advance(
+                self.scenario.joint_min,
+                self.scenario.joint_max,
+                self.scenario.dynamic_time_step,
+            )
+
+    def _get_state(self) -> np.ndarray:
+        dist = np.linalg.norm(self.q_current - self.q_goal)
+        heading_vector = self.q_goal[:3] - self.q_current[:3]
+        heading = math.atan2(heading_vector[1], heading_vector[0]) / math.pi
+        min_clearance = self._minimum_clearance(self.q_current)
+        local_density = sum(
+            1
+            for obstacle in self.obstacles
+            if np.linalg.norm(self.q_current - obstacle.centre) < self.parameters.influence_distance
+        )
+        density = local_density / max(len(self.obstacles), 1)
+        normalised = np.array(
+            [
+                np.clip(dist / 10.0, 0.0, 1.0),
+                np.clip(heading, -1.0, 1.0),
+                np.clip(min_clearance / 5.0, 0.0, 1.0),
+                np.clip(density, 0.0, 1.0),
+            ],
+            dtype=np.float32,
+        )
+        return np.concatenate([normalised, self.parameters.to_array()])
 
 
-class TrainingCallback(BaseCallback):
-    """Callback for monitoring training progress"""
-    
-    def __init__(self, check_freq, save_path, verbose=1):
-        super(TrainingCallback, self).__init__(verbose)
+# ---------------------------------------------------------------------------
+# Callbacks & helpers
+# ---------------------------------------------------------------------------
+
+
+class RewardCheckpoint(BaseCallback):
+    """Simple callback that stores the best model by mean reward."""
+
+    def __init__(self, check_freq: int, save_path: Path, verbose: int = 1) -> None:
+        super().__init__(verbose)
         self.check_freq = check_freq
-        self.save_path = save_path
+        self.save_path = Path(save_path)
+        self.save_path.mkdir(parents=True, exist_ok=True)
         self.best_mean_reward = -np.inf
-    
-    def _on_step(self):
-        if self.n_calls % self.check_freq == 0:
-            # Evaluate policy
-            mean_reward = np.mean([ep_info['r'] for ep_info in self.model.ep_info_buffer])
-            
-            if mean_reward > self.best_mean_reward:
-                self.best_mean_reward = mean_reward
-                if self.verbose > 0:
-                    print(f"New best mean reward: {mean_reward:.2f}")
-                self.model.save(f"{self.save_path}/best_model")
-        
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.check_freq != 0:
+            return True
+
+        if not self.model.ep_info_buffer:
+            return True
+
+        rewards = [ep_info["r"] for ep_info in self.model.ep_info_buffer]
+        mean_reward = float(np.mean(rewards))
+
+        if mean_reward > self.best_mean_reward:
+            self.best_mean_reward = mean_reward
+            if self.verbose:
+                print(f"New best mean reward: {mean_reward:.2f}")
+            self.model.save(self.save_path / "best_model")
         return True
 
 
-def train_rl_agent(total_timesteps=100000, n_envs=4):
-    """
-    Train PPO agent to optimize APF-RRT parameters
-    
-    Args:
-        total_timesteps: Number of training steps
-        n_envs: Number of parallel environments
-    """
-    print("="*60)
-    print("Training RL Agent for APF-RRT Parameter Optimization")
-    print("="*60)
-    
-    # Create vectorized environment
-    env = DummyVecEnv([lambda: APF_RRT_Environment(difficulty='medium') for _ in range(n_envs)])
-    
-    # Create PPO agent
+# ---------------------------------------------------------------------------
+# Benchmark helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BenchmarkMetrics:
+    """Aggregate statistics over evaluation episodes."""
+
+    success_rate: float
+    collision_free_rate: float
+    avg_replanning_time_ms: float
+    dynamic: bool
+
+    def as_dict(self) -> Dict[str, float]:
+        return {
+            "success_rate": self.success_rate,
+            "collision_free_rate": self.collision_free_rate,
+            "avg_replanning_time_ms": self.avg_replanning_time_ms,
+            "dynamic": float(self.dynamic),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Training / evaluation entry points
+# ---------------------------------------------------------------------------
+
+
+def make_vec_env(
+    scenario: ScenarioConfig,
+    n_envs: int,
+    seed: int,
+    use_subprocess: bool = True,
+) -> DummyVecEnv:
+    """Create a vectorised environment for PPO training."""
+
+    def _factory(rank: int):
+        def _init():
+            env = APFRRTEnv(scenario, seed=seed + rank)
+            return Monitor(env)
+
+        return _init
+
+    env_fns = [_factory(i) for i in range(n_envs)]
+    if n_envs == 1:
+        return DummyVecEnv(env_fns)
+    if use_subprocess:
+        return SubprocVecEnv(env_fns)
+    return DummyVecEnv(env_fns)
+
+
+def train_agent(
+    total_timesteps: int = 200_000,
+    n_envs: int = 4,
+    difficulty: str = "medium",
+    dynamic_probability: float = 0.45,
+    obstacle_speed_range: Tuple[float, float] = (0.05, 0.35),
+    log_dir: Path = Path("./models"),
+    seed: int = 42,
+) -> PPO:
+    """Train a PPO agent; tailored defaults for Google Colab."""
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    scenario = ScenarioConfig(
+        difficulty=difficulty,
+        dynamic_probability=dynamic_probability,
+        obstacle_speed_range=obstacle_speed_range,
+    )
+    vec_env = make_vec_env(scenario, n_envs=n_envs, seed=seed)
+
+    policy_kwargs = dict(activation_fn=torch.nn.ReLU, net_arch=[256, 256])
+
     model = PPO(
         "MlpPolicy",
-        env,
+        vec_env,
         learning_rate=3e-4,
-        n_steps=2048,
-        batch_size=64,
+        n_steps=2048 // n_envs,
+        batch_size=256,
         n_epochs=10,
-        gamma=0.99,
+        gamma=0.995,
         gae_lambda=0.95,
         clip_range=0.2,
-        ent_coef=0.01,
+        ent_coef=0.005,
+        vf_coef=0.5,
+        policy_kwargs=policy_kwargs,
         verbose=1,
-        tensorboard_log="./ppo_apf_rrt_tensorboard/"
+        tensorboard_log=str(log_dir / "tensorboard"),
+        device="cuda" if torch.cuda.is_available() else "auto",
+        seed=seed,
     )
-    
-    # Create callback
-    callback = TrainingCallback(check_freq=1000, save_path="./models")
-    
-    # Train
-    print(f"\nTraining for {total_timesteps} timesteps with {n_envs} parallel environments...")
-    start_time = time.time()
-    
-    model.learn(
-        total_timesteps=total_timesteps,
-        callback=callback,
-        progress_bar=True
-    )
-    
-    training_time = time.time() - start_time
-    print(f"\nTraining completed in {training_time/60:.1f} minutes")
-    
-    # Save final model
-    model.save("./models/final_model")
-    print("Model saved to ./models/final_model")
-    
+
+    callback = RewardCheckpoint(check_freq=5_000 // n_envs, save_path=log_dir, verbose=1)
+
+    print("=" * 70)
+    print("Training PPO agent for APF-RRT parameter optimisation")
+    print("Using device:", model.device)
+    print("Parallel environments:", n_envs)
+    print("Total timesteps:", total_timesteps)
+    print("=" * 70)
+
+    start = time.time()
+    model.learn(total_timesteps=total_timesteps, callback=callback, progress_bar=True)
+    duration = time.time() - start
+    print(f"Training finished in {duration / 60:.1f} minutes")
+
+    final_path = log_dir / "final_model"
+    model.save(final_path)
+    print(f"Saved final model to {final_path}")
     return model
 
 
-class RLEnhancedAPF_RRT:
-    """
-    APF-RRT planner enhanced with trained RL agent
-    """
-    
-    def __init__(self, model_path="./models/best_model.zip"):
-        """Load trained RL model"""
-        self.model = PPO.load(model_path)
-        print(f"Loaded RL model from {model_path}")
-        
-        # Default parameters (will be adjusted by RL)
-        self.K_att = 1.0
-        self.K_rep = 0.3
-        self.d0 = 1.5
-        self.step_size = 0.3
-        self.goal_bias = 0.07
-    
-    def plan(self, q_start, q_goal, obstacles, max_iters=5000):
-        """
-        Plan path using RL-enhanced APF-RRT
-        
-        Args:
-            q_start: Start configuration (6-DOF)
-            q_goal: Goal configuration (6-DOF)
-            obstacles: List of (q_obs, radius) tuples
-            max_iters: Maximum iterations
-        
-        Returns:
-            path: List of configurations
-            nodes: All explored nodes
-            runtime: Planning time
-            metrics: Planning metrics
-        """
-        print(f"\nRL-Enhanced Planning from {q_start} to {q_goal}")
-        
-        nodes = [q_start]
-        parents = {0: None}
-        start_time = time.time()
-        
-        # Initialize environment for RL decisions
-        q_current = q_start
-        
+def load_agent(model_path: Path) -> PPO:
+    model_path = Path(model_path)
+    if model_path.is_dir():
+        model_path = model_path / "best_model.zip"
+    return PPO.load(model_path)
+
+
+def benchmark_agent(
+    agent: PPO,
+    n_episodes: int = 40,
+    difficulty: str = "medium",
+    dynamic: bool = False,
+    seed: int = 123,
+) -> BenchmarkMetrics:
+    """Evaluate an agent and summarise success / collision metrics."""
+
+    scenario = ScenarioConfig(
+        difficulty=difficulty,
+        dynamic_probability=1.0 if dynamic else 0.0,
+    )
+    env = APFRRTEnv(scenario, seed=seed)
+
+    successes = 0
+    collision_episodes = 0
+    replanning_times: List[float] = []
+
+    for _ in range(n_episodes):
+        obs, _ = env.reset()
+        done = False
+        truncated = False
+        episode_collided = False
+        step_times: List[float] = []
+
+        while not (done or truncated):
+            action, _ = agent.predict(obs, deterministic=True)
+            obs, _, done, truncated, info = env.step(action)
+            step_times.append(info.get("step_ms", 0.0))
+            if info.get("collision", 0.0):
+                episode_collided = True
+
+        if info.get("reached_goal", 0.0):
+            successes += 1
+        if episode_collided:
+            collision_episodes += 1
+        if step_times:
+            replanning_times.append(float(np.mean(step_times)))
+
+    if not replanning_times:
+        replanning_times.append(0.0)
+
+    return BenchmarkMetrics(
+        success_rate=successes / max(n_episodes, 1),
+        collision_free_rate=1.0 - collision_episodes / max(n_episodes, 1),
+        avg_replanning_time_ms=float(np.mean(replanning_times)),
+        dynamic=dynamic,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Planner using a trained agent
+# ---------------------------------------------------------------------------
+
+
+class RLEnhancedPlanner:
+    """Plan paths with a trained PPO agent adjusting APF parameters."""
+
+    def __init__(self, agent: PPO, scenario: Optional[ScenarioConfig] = None) -> None:
+        self.agent = agent
+        self.parameters = PlannerParameters()
+        self.scenario = scenario or ScenarioConfig(dynamic_probability=0.0)
+
+    def plan(
+        self,
+        q_start: np.ndarray,
+        q_goal: np.ndarray,
+        obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]],
+        max_iters: int = 5_000,
+        scenario: Optional[ScenarioConfig] = None,
+    ) -> Tuple[Optional[List[np.ndarray]], List[np.ndarray], Dict[str, float]]:
+        scenario_cfg = scenario or self.scenario
+        env = APFRRTEnv(scenario_cfg)
+        env.q_start = q_start.copy()
+        env.q_goal = q_goal.copy()
+        env.q_current = q_start.copy()
+        env.obstacles = [self._to_obstacle_state(item, env.scenario.n_joints) for item in obstacles]
+        env.nodes = [q_start.copy()]
+        env.parameters = PlannerParameters()
+        env._step_index = 0
+
+        parents: Dict[int, Optional[int]] = {0: None}
+
         for iteration in range(max_iters):
-            # Get current state for RL
-            state = self._get_state(q_current, q_goal, obstacles, nodes)
-            
-            # RL agent decides parameter adjustments
-            action, _ = self.model.predict(state, deterministic=True)
-            
-            # Apply RL action
-            self._apply_action(action)
-            
-            # Sample configuration (goal-biased)
-            if np.random.random() < self.goal_bias:
-                q_rand = q_goal
+            state = env._get_state()
+            action, _ = self.agent.predict(state, deterministic=True)
+            env.parameters.apply_delta(action)
+
+            q_rand = env._sample_random_configuration()
+            idx_near, q_near = env._find_nearest_node(q_rand)
+            direction = env._compute_direction(q_near, q_rand)
+            q_new = np.clip(
+                q_near + direction * env.parameters.step_size,
+                env.scenario.joint_min,
+                env.scenario.joint_max,
+            )
+
+            if env._in_collision(q_new):
+                continue
+
+            env.nodes.append(q_new)
+            parents[len(env.nodes) - 1] = idx_near
+
+            if np.linalg.norm(q_new - env.q_goal) < 0.2:
+                path = self._reconstruct_path(parents, len(env.nodes) - 1, env.nodes, env.q_goal)
+                metrics = {
+                    "iterations": iteration + 1,
+                    "nodes": len(env.nodes),
+                    "final_params": env.parameters.to_array(),
+                    "dynamic": float(env._dynamic_active),
+                }
+                return path, env.nodes, metrics
+
+        metrics = {
+            "iterations": max_iters,
+            "nodes": len(env.nodes),
+            "final_params": env.parameters.to_array(),
+            "dynamic": float(env._dynamic_active),
+        }
+        return None, env.nodes, metrics
+
+    @staticmethod
+    def _reconstruct_path(
+        parents: Dict[int, Optional[int]],
+        goal_index: int,
+        nodes: Sequence[np.ndarray],
+        q_goal: np.ndarray,
+    ) -> List[np.ndarray]:
+        path = [q_goal.copy()]
+        current = goal_index
+        while current is not None:
+            path.append(nodes[current])
+            current = parents[current]
+        path.reverse()
+        return path
+
+    @staticmethod
+    def _to_obstacle_state(
+        obstacle: Union[Obstacle, Tuple[np.ndarray, float]],
+        n_joints: int,
+    ) -> ObstacleState:
+        if isinstance(obstacle, ObstacleState):
+            return obstacle.copy()
+        centre, radius = obstacle
+        centre_arr = np.asarray(centre, dtype=np.float32).copy()
+        if centre_arr.shape[0] != n_joints:
+            raise ValueError("Obstacle dimension mismatch with scenario joints")
+        return ObstacleState(centre_arr, float(radius), np.zeros(n_joints, dtype=np.float32))
+
+
+# ---------------------------------------------------------------------------
+# Visualisation utilities
+# ---------------------------------------------------------------------------
+
+
+def plot_3d_path(
+    nodes: Sequence[np.ndarray],
+    path: Optional[Sequence[np.ndarray]] = None,
+    obstacles: Optional[Sequence[Obstacle]] = None,
+    show: bool = True,
+    save_path: Optional[Path] = None,
+) -> None:
+    """Visualise the exploration tree and final path in 3D."""
+
+    if plt is None:
+        raise ImportError("matplotlib is required for 3D visualisation")
+
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")
+
+    if nodes:
+        coords = np.array(nodes)
+        ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], s=8, alpha=0.3, label="Tree")
+
+    if path:
+        path_arr = np.array(path)
+        ax.plot(path_arr[:, 0], path_arr[:, 1], path_arr[:, 2], "r-", linewidth=2, label="Path")
+
+    if obstacles:
+        for obstacle in obstacles:
+            if isinstance(obstacle, ObstacleState):
+                centre = obstacle.centre
+                radius = obstacle.radius
             else:
-                q_rand = np.random.uniform(-np.pi, np.pi, 6)
-            
-            # Find nearest node
-            distances = [np.linalg.norm(n - q_rand) for n in nodes]
-            idx_near = int(np.argmin(distances))
-            q_near = nodes[idx_near]
-            
-            # Compute APF-guided direction
-            F_total = self._compute_apf_force(q_near, q_goal, obstacles)
-            v_rand = q_rand - q_near
-            v_rand_unit = v_rand / (np.linalg.norm(v_rand) + 1e-9)
-            v_goal = q_goal - q_near
-            v_goal_unit = v_goal / (np.linalg.norm(v_goal) + 1e-9)
-            
-            # Combine directions
-            combined = (0.5 * v_rand_unit + 0.3 * v_goal_unit + 
-                       0.2 * (F_total / (np.linalg.norm(F_total) + 1e-9)))
-            direction = combined / (np.linalg.norm(combined) + 1e-9)
-            
-            # Generate new configuration
-            q_new = q_near + direction * self.step_size
-            q_new = np.clip(q_new, -np.pi, np.pi)
-            
-            # Check collision
-            if not self._check_collision(q_new, obstacles):
-                nodes.append(q_new)
-                parents[len(nodes) - 1] = idx_near
-                q_current = q_new
-                
-                # Check if goal reached
-                if np.linalg.norm(q_new - q_goal) < 0.2:
-                    print(f"✓ Goal reached in {iteration} iterations!")
-                    
-                    # Reconstruct path
-                    path = [q_goal]
-                    cur = len(nodes) - 1
-                    while cur is not None:
-                        path.append(nodes[cur])
-                        cur = parents[cur]
-                    path.reverse()
-                    
-                    runtime = time.time() - start_time
-                    metrics = {
-                        'nodes': len(nodes),
-                        'iterations': iteration,
-                        'K_att_final': self.K_att,
-                        'K_rep_final': self.K_rep
-                    }
-                    
-                    return path, nodes, runtime, metrics
-        
-        runtime = time.time() - start_time
-        print(f"✗ Failed to reach goal after {max_iters} iterations")
-        return None, nodes, runtime, {}
-    
-    def _get_state(self, q_current, q_goal, obstacles, nodes):
-        """Get state for RL agent"""
-        d_to_goal = np.linalg.norm(q_current - q_goal)
-        v_to_goal = q_goal[:3] - q_current[:3]
-        angle_to_goal = np.arctan2(v_to_goal[1], v_to_goal[0])
-        
-        min_obs_dist = min([np.linalg.norm(q_current - q_obs) - r 
-                           for q_obs, r in obstacles] + [10.0])
-        nearby_obstacles = sum([1 for q_obs, r in obstacles 
-                               if np.linalg.norm(q_current - q_obs) < self.d0])
-        obstacle_density = nearby_obstacles / max(len(obstacles), 1)
-        
-        state = np.array([
-            d_to_goal / 10.0,
-            angle_to_goal / np.pi,
-            min_obs_dist / 5.0,
-            obstacle_density,
-            self.K_att,
-            self.K_rep,
-            self.d0,
-            self.step_size,
-            len(nodes) / 1000.0
-        ], dtype=np.float32)
-        
-        return state
-    
-    def _apply_action(self, action):
-        """Apply RL action to adjust parameters"""
-        self.K_att = np.clip(self.K_att + action[0], 0.1, 5.0)
-        self.K_rep = np.clip(self.K_rep + action[1], 0.05, 2.0)
-        self.d0 = np.clip(self.d0 + action[2], 0.5, 3.0)
-        self.step_size = np.clip(self.step_size + action[3], 0.1, 1.0)
-        self.goal_bias = np.clip(self.goal_bias + action[4], 0.0, 0.3)
-    
-    def _compute_apf_force(self, q_near, q_goal, obstacles):
-        """Compute APF force"""
-        v_att = q_goal - q_near
-        d_att = np.linalg.norm(v_att)
-        F_att = (self.K_att * (v_att / (d_att + 1e-9))) if d_att > 0 else np.zeros(6)
-        
-        F_rep = np.zeros(6)
-        for q_obs, r in obstacles:
-            v_obs = q_near - q_obs
-            d_obs = np.linalg.norm(v_obs) - r
-            
-            if d_obs <= self.d0 and d_obs > 1e-6:
-                mag = self.K_rep * (1.0 / (d_obs ** 2)) * (1.0/d_obs - 1.0/self.d0)
-                F_rep += mag * (v_obs / (np.linalg.norm(v_obs) + 1e-9))
-        
-        return F_att + F_rep
-    
-    def _check_collision(self, q, obstacles):
-        """Check collision"""
-        for q_obs, r in obstacles:
-            if np.linalg.norm(q - q_obs) < r:
-                return True
-        return False
+                centre, radius = obstacle
+            u, v = np.mgrid[0 : 2 * np.pi : 12j, 0 : np.pi : 6j]
+            x = centre[0] + radius * np.cos(u) * np.sin(v)
+            y = centre[1] + radius * np.sin(u) * np.sin(v)
+            z = centre[2] + radius * np.cos(v)
+            ax.plot_surface(x, y, z, color="grey", alpha=0.2)
+
+    ax.set_title("APF-RRT exploration (first 3 joints)")
+    ax.set_xlabel("Joint 1")
+    ax.set_ylabel("Joint 2")
+    ax.set_zlabel("Joint 3")
+    ax.legend(loc="upper right")
+    ax.grid(True)
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200)
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="RL-enhanced APF-RRT planner")
+    subparsers = parser.add_subparsers(dest="mode", required=False)
+
+    train_parser = subparsers.add_parser("train", help="Train a new PPO agent")
+    train_parser.add_argument("--timesteps", type=int, default=200_000)
+    train_parser.add_argument("--n-envs", type=int, default=4)
+    train_parser.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
+    train_parser.add_argument("--dynamic-prob", type=float, default=0.45, help="Probability of dynamic obstacles during training")
+    train_parser.add_argument(
+        "--obstacle-speed-min",
+        type=float,
+        default=0.05,
+        help="Minimum obstacle speed for dynamic scenarios",
+    )
+    train_parser.add_argument(
+        "--obstacle-speed-max",
+        type=float,
+        default=0.35,
+        help="Maximum obstacle speed for dynamic scenarios",
+    )
+    train_parser.add_argument("--seed", type=int, default=42)
+    train_parser.add_argument("--log-dir", type=Path, default=Path("./models"))
+
+    test_parser = subparsers.add_parser("test", help="Evaluate with a trained agent")
+    test_parser.add_argument("--model", type=Path, default=Path("./models/best_model.zip"))
+    test_parser.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
+    test_parser.add_argument("--dynamic", action="store_true", help="Use dynamic obstacle scenarios")
+    test_parser.add_argument("--plot", action="store_true", help="Show 3D visualisation")
+
+    benchmark_parser = subparsers.add_parser("benchmark", help="Report success / collision metrics")
+    benchmark_parser.add_argument("--model", type=Path, default=Path("./models/best_model.zip"))
+    benchmark_parser.add_argument("--episodes", type=int, default=40)
+    benchmark_parser.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
+    benchmark_parser.add_argument("--seed", type=int, default=123)
+    benchmark_parser.add_argument(
+        "--dynamic",
+        action="store_true",
+        help="Also evaluate on dynamic obstacle scenarios",
+    )
+
+    parser.set_defaults(mode="test")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+
+    if args.mode == "train":
+        obstacle_speed_range = (args.obstacle_speed_min, args.obstacle_speed_max)
+        if obstacle_speed_range[0] > obstacle_speed_range[1]:
+            raise ValueError("Minimum obstacle speed must not exceed maximum speed")
+        train_agent(
+            total_timesteps=args.timesteps,
+            n_envs=args.n_envs,
+            difficulty=args.difficulty,
+            dynamic_probability=args.dynamic_prob,
+            obstacle_speed_range=obstacle_speed_range,
+            log_dir=args.log_dir,
+            seed=args.seed,
+        )
+        return
+
+    if args.mode == "benchmark":
+        agent = load_agent(args.model)
+        scenario_flags = [False]
+        if args.dynamic:
+            scenario_flags.append(True)
+
+        results = {}
+        for dynamic_flag in scenario_flags:
+            metrics = benchmark_agent(
+                agent,
+                n_episodes=args.episodes,
+                difficulty=args.difficulty,
+                dynamic=dynamic_flag,
+                seed=args.seed,
+            )
+            results["Dynamic" if dynamic_flag else "Static"] = metrics
+
+        headers = ["Metric"] + list(results.keys())
+        print(" | ".join(headers))
+        print(" | ".join(["---"] * len(headers)))
+        def _format_rate(metric_name: str) -> str:
+            cells = [metric_name]
+            for metrics in results.values():
+                value = metrics.success_rate if metric_name == "Success Rate" else metrics.collision_free_rate
+                cells.append(f"{value * 100:.1f}%")
+            return " | ".join(cells)
+
+        print(_format_rate("Success Rate"))
+        print(_format_rate("Collision Avoidance"))
+
+        time_row = ["Avg Replanning Time"]
+        for metrics in results.values():
+            time_row.append(f"{metrics.avg_replanning_time_ms:.1f}ms")
+        print(" | ".join(time_row))
+        return
+
+    agent = load_agent(args.model)
+    scenario = ScenarioConfig(
+        difficulty=args.difficulty,
+        dynamic_probability=1.0 if getattr(args, "dynamic", False) else 0.0,
+    )
+    planner = RLEnhancedPlanner(agent, scenario=scenario)
+
+    q_start = np.array([0.8, 1.2, -0.6, -0.4, 0.5, 0.2])
+    q_goal = np.zeros(6)
+    base_obstacles: Sequence[Tuple[np.ndarray, float]] = [
+        (np.array([0.5, 0.7, -0.3, 0.0, 0.3, 0.0]), 0.5),
+        (np.array([0.2, 0.5, -0.5, -0.1, 0.5, 0.1]), 0.4),
+    ]
+
+    rng = np.random.default_rng(123)
+    obstacles: List[Obstacle] = []
+    for centre, radius in base_obstacles:
+        if scenario.dynamic_probability > 0.0:
+            direction = rng.normal(size=scenario.n_joints)
+            direction /= np.linalg.norm(direction) + 1e-9
+            speed = np.mean(scenario.obstacle_speed_range)
+            velocity = direction * speed
+        else:
+            velocity = np.zeros(scenario.n_joints)
+        obstacles.append(ObstacleState(centre.copy(), radius, velocity))
+
+    path, nodes, metrics = planner.plan(q_start, q_goal, obstacles)
+    if path is None:
+        print("✗ Failed to find a collision-free path")
+    else:
+        print("✓ Path found")
+        print(f"Iterations: {metrics['iterations']}")
+        print(f"Nodes: {metrics['nodes']}")
+        print(f"Dynamic scenario: {bool(metrics['dynamic'])}")
+        print("Final parameters:", metrics["final_params"])
+        if getattr(args, "plot", False):
+            plot_3d_path(nodes, path, obstacles, show=True)
 
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='RL-Enhanced APF-RRT')
-    parser.add_argument('--mode', choices=['train', 'test'], default='test',
-                       help='Train new model or test existing one')
-    parser.add_argument('--timesteps', type=int, default=100000,
-                       help='Training timesteps')
-    parser.add_argument('--model', type=str, default='./models/best_model.zip',
-                       help='Path to trained model')
-    
-    args = parser.parse_args()
-    
-    if args.mode == 'train':
-        print("Starting RL training...")
-        model = train_rl_agent(total_timesteps=args.timesteps)
-        print("\n✓ Training complete! Run with --mode test to evaluate.")
-        
-    else:  # test mode
-        print("Testing RL-enhanced planner...")
-        planner = RLEnhancedAPF_RRT(model_path=args.model)
-        
-        # Test scenario
-        q_start = np.array([0.8, 1.4, -0.7, -0.2, 0.7, 0.1])
-        q_goal = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        obstacles = [
-            (np.array([0.5, 0.7, -0.3, 0.0, 0.3, 0.0]), 0.5),
-            (np.array([0.2, 0.5, -0.5, -0.1, 0.5, 0.1]), 0.4)
-        ]
-        
-        path, nodes, runtime, metrics = planner.plan(q_start, q_goal, obstacles)
-        
-        if path:
-            print(f"\n✓ Success!")
-            print(f"  Nodes: {metrics['nodes']}")
-            print(f"  Runtime: {runtime:.3f}s")
-            print(f"  Final K_att: {metrics['K_att_final']:.3f}")
-            print(f"  Final K_rep: {metrics['K_rep_final']:.3f}")
-        else:
-            print(f"\n✗ Failed to find path")
+    main()
