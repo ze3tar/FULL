@@ -5,13 +5,34 @@ Compares: Basic RRT, RRT*, RRT-Connect, APF-RRT, RL-APF-RRT, +PSO, +Prediction
 Supports both static and dynamic environments with ROS visualization
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+from pathlib import Path
 import time
 import json
-import pandas as pd
-from pathlib import Path
+
+try:
+    import numpy as np
+except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+    raise ModuleNotFoundError(
+        "NumPy is required for benchmarking. Install it with `pip install numpy` "
+        "or run the notebook setup cell in Colab."
+    ) from exc
+
+try:
+    import pandas as pd
+except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+    raise ModuleNotFoundError(
+        "Pandas is required for benchmarking. Install it with `pip install pandas` "
+        "or run the notebook setup cell in Colab."
+    ) from exc
+
+try:
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+    raise ModuleNotFoundError(
+        "Matplotlib is required for plotting benchmark results. Install it with "
+        "`pip install matplotlib`."
+    ) from exc
 
 # Import all planners
 from baseline_enhanced import (
@@ -275,26 +296,32 @@ class PlanningBenchmark:
     
     def save_results(self, filename='benchmark_results.json'):
         """Save results to JSON"""
+        filename = Path(filename)
+        filename.parent.mkdir(parents=True, exist_ok=True)
+
         # Convert to serializable format
         serializable_results = []
         for result in self.results:
             r = result.copy()
             # Convert arrays to lists
             if 'path' in r and r['path'] is not None:
-                r['path'] = [p.tolist() if isinstance(p, np.ndarray) else p 
+                r['path'] = [p.tolist() if isinstance(p, np.ndarray) else p
                            for p in r['path']]
             if 'nodes' in r:
-                r['nodes'] = [n.tolist() if isinstance(n, np.ndarray) else n 
+                r['nodes'] = [n.tolist() if isinstance(n, np.ndarray) else n
                             for n in r['nodes']]
             serializable_results.append(r)
-        
+
         with open(filename, 'w') as f:
             json.dump(serializable_results, f, indent=2)
-        
+
         print(f"\nResults saved to {filename}")
     
     def plot_comparison(self, results_df, save_path='comparison_plots.png'):
         """Create comprehensive comparison plots"""
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
         fig = plt.figure(figsize=(18, 10))
         
         # Filter successful trials
@@ -427,7 +454,7 @@ def main():
                        help='Number of trials per algorithm')
     parser.add_argument('--pso', action='store_true',
                        help='Enable PSO smoothing')
-    parser.add_argument('--save', type=str, default='benchmark_results',
+    parser.add_argument('--save', type=str, default='benchmarks/final_benchmark',
                        help='Base name for saving results')
     
     args = parser.parse_args()
@@ -455,12 +482,15 @@ def main():
     )
     
     # Save results
-    benchmark.save_results(f'{args.save}.json')
-    results_df.to_csv(f'{args.save}.csv', index=False)
-    print(f"Results saved to {args.save}.csv")
-    
+    save_base = Path(args.save)
+    save_base.parent.mkdir(parents=True, exist_ok=True)
+
+    benchmark.save_results(save_base.with_suffix('.json'))
+    results_df.to_csv(save_base.with_suffix('.csv'), index=False)
+    print(f"Results saved to {save_base.with_suffix('.csv')}")
+
     # Create plots
-    benchmark.plot_comparison(results_df, f'{args.save}_plots.png')
+    benchmark.plot_comparison(results_df, save_base.with_name(save_base.name + '_plots.png'))
     
     print("\n✓ Benchmark complete!")
     print(f"\nGenerated files:")
