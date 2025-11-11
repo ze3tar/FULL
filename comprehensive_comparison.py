@@ -5,13 +5,35 @@ Compares: Basic RRT, RRT*, RRT-Connect, APF-RRT, RL-APF-RRT, +PSO, +Prediction
 Supports both static and dynamic environments with ROS visualization
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+from pathlib import Path
 import time
 import json
-import pandas as pd
-from pathlib import Path
+import math
+
+try:
+    import numpy as np
+except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+    raise ModuleNotFoundError(
+        "NumPy is required for benchmarking. Install it with `pip install numpy` "
+        "or run the notebook setup cell in Colab."
+    ) from exc
+
+try:
+    import pandas as pd
+except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+    raise ModuleNotFoundError(
+        "Pandas is required for benchmarking. Install it with `pip install pandas` "
+        "or run the notebook setup cell in Colab."
+    ) from exc
+
+try:
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+    raise ModuleNotFoundError(
+        "Matplotlib is required for plotting benchmark results. Install it with "
+        "`pip install matplotlib`."
+    ) from exc
 
 # Import all planners
 from baseline_enhanced import (
@@ -275,26 +297,32 @@ class PlanningBenchmark:
     
     def save_results(self, filename='benchmark_results.json'):
         """Save results to JSON"""
+        filename = Path(filename)
+        filename.parent.mkdir(parents=True, exist_ok=True)
+
         # Convert to serializable format
         serializable_results = []
         for result in self.results:
             r = result.copy()
             # Convert arrays to lists
             if 'path' in r and r['path'] is not None:
-                r['path'] = [p.tolist() if isinstance(p, np.ndarray) else p 
+                r['path'] = [p.tolist() if isinstance(p, np.ndarray) else p
                            for p in r['path']]
             if 'nodes' in r:
-                r['nodes'] = [n.tolist() if isinstance(n, np.ndarray) else n 
+                r['nodes'] = [n.tolist() if isinstance(n, np.ndarray) else n
                             for n in r['nodes']]
             serializable_results.append(r)
-        
+
         with open(filename, 'w') as f:
             json.dump(serializable_results, f, indent=2)
-        
+
         print(f"\nResults saved to {filename}")
     
     def plot_comparison(self, results_df, save_path='comparison_plots.png'):
         """Create comprehensive comparison plots"""
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
         fig = plt.figure(figsize=(18, 10))
         
         # Filter successful trials
@@ -370,7 +398,116 @@ class PlanningBenchmark:
         plt.tight_layout()
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"\nComparison plots saved to {save_path}")
-        plt.show()
+        plt.close(fig)
+
+    def plot_3d_paths(self, results_df, scenarios, save_prefix='comparison_paths_3d'):
+        """Create 3D path visualizations for each scenario and algorithm.
+
+        Args:
+            results_df: Benchmark results DataFrame.
+            scenarios: Original scenario definitions containing obstacles.
+            save_prefix: Base path (without extension) used for saving figures.
+
+        Returns:
+            List of saved figure paths.
+        """
+
+        save_prefix = Path(save_prefix)
+        save_prefix.parent.mkdir(parents=True, exist_ok=True)
+
+        successful = results_df[results_df['success']]
+        if successful.empty:
+            print("No successful trials available for 3D visualization.")
+            return []
+
+        saved_paths = []
+        algorithms = list(results_df['algorithm'].dropna().unique())
+
+        def _plot_obstacles(ax, obstacles):
+            """Render spherical obstacles on a 3D axis."""
+            for center, radius in obstacles:
+                u = np.linspace(0.0, 2.0 * math.pi, 24)
+                v = np.linspace(0.0, math.pi, 12)
+                x = center[0] + radius * np.outer(np.cos(u), np.sin(v))
+                y = center[1] + radius * np.outer(np.sin(u), np.sin(v))
+                z = center[2] + radius * np.outer(np.ones_like(u), np.cos(v))
+                ax.plot_surface(x, y, z, color='lightgray', alpha=0.2, linewidth=0)
+
+        for scenario in scenarios:
+            scenario_name = scenario['name']
+            scenario_results = successful[successful['scenario'] == scenario_name]
+            if scenario_results.empty:
+                continue
+
+            cols = max(1, len(algorithms))
+            fig = plt.figure(figsize=(6 * cols, 6))
+
+            for col, algorithm in enumerate(algorithms, start=1):
+                ax = fig.add_subplot(1, cols, col, projection='3d')
+                scenario_algo_results = scenario_results[scenario_results['algorithm'] == algorithm]
+
+                if scenario_algo_results.empty:
+                    ax.set_title(f"{algorithm}\n(no successful trials)")
+                    ax.set_axis_off()
+                    continue
+
+                best_run = scenario_algo_results.sort_values('planning_time').iloc[0]
+                path = best_run['path']
+                nodes = best_run['nodes']
+
+                if path is not None:
+                    path_arr = np.asarray(path, dtype=float)
+                    if path_arr.ndim == 2 and path_arr.shape[1] >= 3:
+                        path_arr = path_arr[:, :3]
+                    if path_arr.size >= 3:
+                        ax.plot(path_arr[:, 0], path_arr[:, 1], path_arr[:, 2],
+                                '-o', linewidth=2, markersize=3, color='tab:blue', label='Path')
+
+                if nodes is not None and len(nodes):
+                    nodes_arr = np.asarray(nodes, dtype=float)
+                    if nodes_arr.ndim == 2 and nodes_arr.shape[1] >= 3:
+                        nodes_arr = nodes_arr[:, :3]
+                    if nodes_arr.size >= 3:
+                        ax.scatter(nodes_arr[:, 0], nodes_arr[:, 1], nodes_arr[:, 2],
+                                   s=4, alpha=0.15, color='tab:orange', label='Tree nodes')
+
+                start = np.asarray(scenario['start'])
+                goal = np.asarray(scenario['goal'])
+                ax.scatter([start[0]], [start[1]], [start[2]],
+                           c='green', s=60, marker='o', edgecolors='black', linewidths=1.5,
+                           label='Start')
+                ax.scatter([goal[0]], [goal[1]], [goal[2]],
+                           c='purple', s=80, marker='*', edgecolors='black', linewidths=1.5,
+                           label='Goal')
+
+                _plot_obstacles(ax, scenario['obstacles'])
+
+                ax.set_title(f"{algorithm}\n{best_run['planning_time']:.2f}s, {best_run['path_length']:.1f}mm")
+                ax.set_xlabel('X (mm)')
+                ax.set_ylabel('Y (mm)')
+                ax.set_zlabel('Z (mm)')
+                ax.set_xlim(self.bounds[0])
+                ax.set_ylim(self.bounds[1])
+                ax.set_zlim(self.bounds[2])
+                ax.view_init(elev=25, azim=-60)
+
+                if col == 1:
+                    ax.legend(loc='upper left', fontsize='small')
+
+            fig.suptitle(f"3D Paths – {scenario_name}", fontsize=16)
+            fig.tight_layout()
+
+            save_path = save_prefix.parent / f"{save_prefix.name}_{scenario_name.lower().replace(' ', '_')}.png"
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            saved_paths.append(save_path)
+
+        if saved_paths:
+            print("3D path visualizations saved to:")
+            for path in saved_paths:
+                print(f"  - {path}")
+
+        return saved_paths
 
 
 def create_test_scenarios():
@@ -427,7 +564,7 @@ def main():
                        help='Number of trials per algorithm')
     parser.add_argument('--pso', action='store_true',
                        help='Enable PSO smoothing')
-    parser.add_argument('--save', type=str, default='benchmark_results',
+    parser.add_argument('--save', type=str, default='benchmarks/final_benchmark',
                        help='Base name for saving results')
     
     args = parser.parse_args()
@@ -455,18 +592,27 @@ def main():
     )
     
     # Save results
-    benchmark.save_results(f'{args.save}.json')
-    results_df.to_csv(f'{args.save}.csv', index=False)
-    print(f"Results saved to {args.save}.csv")
-    
+    save_base = Path(args.save)
+    save_base.parent.mkdir(parents=True, exist_ok=True)
+
+    benchmark.save_results(save_base.with_suffix('.json'))
+    results_df.to_csv(save_base.with_suffix('.csv'), index=False)
+    print(f"Results saved to {save_base.with_suffix('.csv')}")
+
     # Create plots
-    benchmark.plot_comparison(results_df, f'{args.save}_plots.png')
-    
+    benchmark.plot_comparison(results_df, save_base.with_name(save_base.name + '_plots.png'))
+    benchmark.plot_3d_paths(
+        results_df,
+        scenarios,
+        save_base.with_name(save_base.name + '_3d')
+    )
+
     print("\n✓ Benchmark complete!")
     print(f"\nGenerated files:")
     print(f"  - {args.save}.json")
     print(f"  - {args.save}.csv")
     print(f"  - {args.save}_plots.png")
+    print(f"  - {args.save}_3d_<scenario>.png")
 
 
 if __name__ == "__main__":
