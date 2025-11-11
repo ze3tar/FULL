@@ -32,7 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
 try:  # pragma: no cover - optional dependency guard
     import tensorflow as tf  # type: ignore
@@ -44,7 +45,7 @@ import torch
 from gymnasium import Env, spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
-from stable_baselines3.common.evaluation import explained_variance
+from stable_baselines3.common.utils import explained_variance
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
@@ -466,7 +467,17 @@ class RewardCheckpoint(BaseCallback):
 
 
 class ValueDiagnosticsCallback(BaseCallback):
-    """Logs the critic explained variance each rollout to monitor learning."""
+    """Logs value function diagnostics during and after rollouts."""
+
+    def __init__(self, verbose: int = 0) -> None:
+        super().__init__(verbose)
+
+    def _on_step(self) -> bool:
+        if self.n_calls % 1000 == 0:
+            value_loss = self.locals.get("value_loss")
+            if value_loss is not None and self.verbose > 0:
+                print(f"[Diagnostics] Step {self.n_calls} | Value loss: {value_loss}")
+        return True
 
     def _on_rollout_end(self) -> bool:
         values = self.model.rollout_buffer.values.flatten()
@@ -565,7 +576,7 @@ def train_agent(
     )
 
     if critic_strong:
-        policy_kwargs = dict(net_arch=[dict(pi=[64, 64], vf=[128, 128, 64])])
+        policy_kwargs = dict(net_arch=dict(pi=[64, 64], vf=[128, 128, 64]))
         model = PPO(
             "MlpPolicy",
             vec_env,
@@ -586,7 +597,10 @@ def train_agent(
             seed=seed,
         )
     else:
-        policy_kwargs = dict(activation_fn=torch.nn.ReLU, net_arch=[256, 256])
+        policy_kwargs = dict(
+            activation_fn=torch.nn.ReLU,
+            net_arch=dict(pi=[256, 256], vf=[256, 256]),
+        )
         model = PPO(
             "MlpPolicy",
             vec_env,

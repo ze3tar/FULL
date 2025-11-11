@@ -1,10 +1,7 @@
-numpy==1.26.4
-matplotlib
-torch
-torchvision
-gymnasium[classic-control]
-stable-baselines3
-pandas
-tqdm
+torch>=2.0
+gymnasium>=0.29
+stable-baselines3>=1.8.0
 opencv-python
-shapely
+tqdm
+matplotlib
+numpy<2.1
