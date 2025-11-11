@@ -17,6 +17,26 @@ The enhanced critic configuration is enabled by default (toggle with
 normalisation and a deeper value network, yielding smoother value estimation and
 more stable training curves.
 
+### Training in Google Colab
+
+To reproduce the full training run on Google Colab, execute the following
+commands in a notebook cell:
+
+```bash
+!git clone https://github.com/<your-fork>/RL-Enhanced-APF-RRT.git
+%cd RL-Enhanced-APF-RRT
+!pip install -r requirements.txt
+!python rl_enhanced_apf_rrt.py train \
+    --timesteps 5000000 \
+    --n-envs 4 \
+    --difficulty medium \
+    --dynamic-prob 0.45
+```
+
+Adjust `--difficulty` and `--dynamic-prob` to explore curriculum variants or
+dynamic obstacle frequencies as needed. Mount Google Drive beforehand if you
+want checkpoints to persist between sessions.
+
 ## Evaluation
 
 Load checkpoints for benchmarking or quick qualitative tests:
