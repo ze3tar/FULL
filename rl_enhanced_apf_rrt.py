@@ -626,54 +626,84 @@ class RLEnhancedPlanner:
         obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]],
         max_iters: int = 5_000,
         scenario: Optional[ScenarioConfig] = None,
+        max_attempts: int = 3,
     ) -> Tuple[Optional[List[np.ndarray]], List[np.ndarray], float, Dict[str, float]]:
         if self.agent is None:
             raise ValueError(
                 "Agent not initialized. Please provide a trained RL agent or set "
                 "agent=None for benchmarks."
             )
+
         scenario_cfg = scenario or self.scenario
-        env = APFRRTEnv(scenario_cfg)
-        env.q_start = q_start.copy()
-        env.q_goal = q_goal.copy()
-        env.q_current = q_start.copy()
-        env.obstacles = [self._to_obstacle_state(item, env.scenario.n_joints) for item in obstacles]
-        env.nodes = [q_start.copy()]
-        env.parameters = PlannerParameters()
-        env._step_index = 0
+        max_attempts = max(1, int(self.config.get("max_attempts", max_attempts)))
+        base_seed = self.config.get("seed")
 
-        parents: Dict[int, Optional[int]] = {0: None}
-        start_time = time.perf_counter()
+        base_obstacles: List[ObstacleState] = [
+            self._to_obstacle_state(item, scenario_cfg.n_joints) for item in obstacles
+        ]
 
-        for iteration in range(max_iters):
-            state = env._get_state()
-            action, _ = self.agent.predict(state, deterministic=True)
-            env.parameters.apply_delta(action)
+        last_nodes: List[np.ndarray] = []
+        last_metrics: Dict[str, float] = {}
+        last_plan_time = 0.0
 
-            q_rand = env._sample_random_configuration()
-            idx_near, q_near = env._find_nearest_node(q_rand)
-            direction = env._compute_direction(q_near, q_rand)
-            q_new = np.clip(
-                q_near + direction * env.parameters.step_size,
-                env.scenario.joint_min,
-                env.scenario.joint_max,
+        for attempt in range(max_attempts):
+            attempt_seed: Optional[int]
+            if base_seed is not None:
+                attempt_seed = int(base_seed) + attempt
+            else:
+                attempt_seed = None
+
+            env = APFRRTEnv(scenario_cfg, seed=attempt_seed)
+            env.q_start = q_start.copy()
+            env.q_goal = q_goal.copy()
+            env.q_current = q_start.copy()
+            env.obstacles = [obstacle.copy() for obstacle in base_obstacles]
+            env._dynamic_active = bool(
+                scenario_cfg.dynamic_probability > 0.0
+                and any(np.linalg.norm(obs.velocity) > 0 for obs in env.obstacles)
             )
+            env.nodes = [q_start.copy()]
+            env.parameters = PlannerParameters()
+            env._step_index = 0
 
-            if env._in_collision(q_new):
-                continue
+            parents: Dict[int, Optional[int]] = {0: None}
+            start_time = time.perf_counter()
 
-            env.nodes.append(q_new)
-            parents[len(env.nodes) - 1] = idx_near
+            for iteration in range(max_iters):
+                state = env._get_state()
+                action, _ = self.agent.predict(state, deterministic=True)
+                env.parameters.apply_delta(action)
 
-            if np.linalg.norm(q_new - env.q_goal) < 0.2:
-                path = self._reconstruct_path(parents, len(env.nodes) - 1, env.nodes, env.q_goal)
-                plan_time = float(time.perf_counter() - start_time)
-                metrics = self._build_metrics(env, iteration + 1)
-                return path, env.nodes, plan_time, metrics
+                q_rand = env._sample_random_configuration()
+                idx_near, q_near = env._find_nearest_node(q_rand)
+                direction = env._compute_direction(q_near, q_rand)
+                q_new = np.clip(
+                    q_near + direction * env.parameters.step_size,
+                    env.scenario.joint_min,
+                    env.scenario.joint_max,
+                )
 
-        plan_time = float(time.perf_counter() - start_time)
-        metrics = self._build_metrics(env, max_iters)
-        return None, env.nodes, plan_time, metrics
+                if env._in_collision(q_new):
+                    continue
+
+                env.nodes.append(q_new)
+                parents[len(env.nodes) - 1] = idx_near
+
+                if np.linalg.norm(q_new - env.q_goal) < 0.2:
+                    path = self._reconstruct_path(
+                        parents, len(env.nodes) - 1, env.nodes, env.q_goal
+                    )
+                    plan_time = float(time.perf_counter() - start_time)
+                    metrics = self._build_metrics(env, iteration + 1)
+                    metrics["restart_attempts"] = float(attempt + 1)
+                    return path, env.nodes, plan_time, metrics
+
+            last_plan_time = float(time.perf_counter() - start_time)
+            last_nodes = env.nodes
+            last_metrics = self._build_metrics(env, max_iters)
+            last_metrics["restart_attempts"] = float(attempt + 1)
+
+        return None, last_nodes, last_plan_time, last_metrics
 
     @staticmethod
     def _build_metrics(env: APFRRTEnv, iterations: int) -> Dict[str, float]:
@@ -825,6 +855,12 @@ def _parse_args() -> argparse.Namespace:
     test_parser.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
     test_parser.add_argument("--dynamic", action="store_true", help="Use dynamic obstacle scenarios")
     test_parser.add_argument("--plot", action="store_true", help="Show 3D visualisation")
+    test_parser.add_argument(
+        "--restarts",
+        type=int,
+        default=3,
+        help="Number of planner restarts if the initial attempt fails",
+    )
 
     benchmark_parser = subparsers.add_parser("benchmark", help="Report success / collision metrics")
     benchmark_parser.add_argument("--model", type=Path, default=Path("./models/best_model.zip"))
@@ -921,7 +957,12 @@ def main() -> None:
             velocity = np.zeros(scenario.n_joints)
         obstacles.append(ObstacleState(centre.copy(), radius, velocity))
 
-    path, nodes, plan_time, metrics = planner.plan(q_start, q_goal, obstacles)
+    path, nodes, plan_time, metrics = planner.plan(
+        q_start,
+        q_goal,
+        obstacles,
+        max_attempts=args.restarts,
+    )
     if path is None:
         print("✗ Failed to find a collision-free path")
     else:
