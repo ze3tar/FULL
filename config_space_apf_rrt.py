@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 from gymnasium import Env
@@ -94,6 +94,7 @@ def train_colab_ready_agent(
         obstacle_speed_range=(settings.obstacle_speed_min, settings.obstacle_speed_max),
         log_dir=Path(log_dir),
         seed=effective_seed,
+        critic_strong=True,
     )
 
 
@@ -106,9 +107,15 @@ def evaluate_agent(
     """Convenience benchmarking in static and dynamic obstacle regimes."""
 
     settings = settings or ConfigSpaceSettings()
+    if isinstance(agent, tuple):
+        policy, normalizer = agent
+    else:
+        policy, normalizer = agent, None
+
     results = [
         benchmark_agent(
-            agent,
+            policy,
+            normalizer,
             n_episodes=episodes,
             difficulty=settings.difficulty,
             dynamic=False,
@@ -118,7 +125,8 @@ def evaluate_agent(
     if include_dynamic:
         results.append(
             benchmark_agent(
-                agent,
+                policy,
+                normalizer,
                 n_episodes=episodes,
                 difficulty=settings.difficulty,
                 dynamic=True,

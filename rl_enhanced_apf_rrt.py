@@ -43,9 +43,10 @@ import numpy as np
 import torch
 from gymnasium import Env, spaces
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+from stable_baselines3.common.evaluation import explained_variance
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 # Matplotlib is an optional dependency; importing lazily keeps the module usable
 # without it (e.g. on headless Colab runtimes before ``pip install matplotlib``).
@@ -403,6 +404,39 @@ class APFRRTEnv(Env):
 # ---------------------------------------------------------------------------
 
 
+class ObservationNormalizer:
+    """Utility for applying observation normalisation offline."""
+
+    def __init__(
+        self,
+        mean: np.ndarray,
+        var: np.ndarray,
+        clip: float,
+        epsilon: float = 1e-8,
+    ) -> None:
+        self.mean = mean.astype(np.float32)
+        self.var = var.astype(np.float32)
+        self.clip = float(clip)
+        self.epsilon = float(epsilon)
+
+    def normalize(self, observation: np.ndarray) -> np.ndarray:
+        normalised = (observation - self.mean) / np.sqrt(self.var + self.epsilon)
+        if self.clip > 0:
+            normalised = np.clip(normalised, -self.clip, self.clip)
+        return normalised.astype(np.float32)
+
+    @classmethod
+    def from_file(cls, path: Path) -> "ObservationNormalizer":
+        with np.load(path) as data:
+            epsilon = float(data["epsilon"]) if "epsilon" in data else 1e-8
+            return cls(
+                mean=data["mean"],
+                var=data["var"],
+                clip=float(data["clip"]),
+                epsilon=epsilon,
+            )
+
+
 class RewardCheckpoint(BaseCallback):
     """Simple callback that stores the best model by mean reward."""
 
@@ -428,6 +462,19 @@ class RewardCheckpoint(BaseCallback):
             if self.verbose:
                 print(f"New best mean reward: {mean_reward:.2f}")
             self.model.save(self.save_path / "best_model")
+        return True
+
+
+class ValueDiagnosticsCallback(BaseCallback):
+    """Logs the critic explained variance each rollout to monitor learning."""
+
+    def _on_rollout_end(self) -> bool:
+        values = self.model.rollout_buffer.values.flatten()
+        returns = self.model.rollout_buffer.returns.flatten()
+        variance = explained_variance(returns, values)
+        self.logger.record("diagnostics/explained_variance", float(variance))
+        if self.verbose > 0:
+            print(f"Explained variance: {variance:.3f}")
         return True
 
 
@@ -464,7 +511,9 @@ def make_vec_env(
     n_envs: int,
     seed: int,
     use_subprocess: bool = True,
-) -> DummyVecEnv:
+    normalize: bool = False,
+    vecnormalize_kwargs: Optional[Dict[str, Any]] = None,
+) -> Union[DummyVecEnv, VecNormalize]:
     """Create a vectorised environment for PPO training."""
 
     def _factory(rank: int):
@@ -476,10 +525,18 @@ def make_vec_env(
 
     env_fns = [_factory(i) for i in range(n_envs)]
     if n_envs == 1:
-        return DummyVecEnv(env_fns)
-    if use_subprocess:
-        return SubprocVecEnv(env_fns)
-    return DummyVecEnv(env_fns)
+        vec_env: Union[DummyVecEnv, SubprocVecEnv] = DummyVecEnv(env_fns)
+    elif use_subprocess:
+        vec_env = SubprocVecEnv(env_fns)
+    else:
+        vec_env = DummyVecEnv(env_fns)
+
+    if normalize:
+        kwargs = dict(norm_obs=True, norm_reward=True, clip_obs=10.0)
+        if vecnormalize_kwargs:
+            kwargs.update(vecnormalize_kwargs)
+        return VecNormalize(vec_env, **kwargs)
+    return vec_env
 
 
 def train_agent(
@@ -490,6 +547,7 @@ def train_agent(
     obstacle_speed_range: Tuple[float, float] = (0.05, 0.35),
     log_dir: Path = Path("./models"),
     seed: int = 42,
+    critic_strong: bool = True,
 ) -> PPO:
     """Train a PPO agent; tailored defaults for Google Colab."""
 
@@ -499,30 +557,62 @@ def train_agent(
         dynamic_probability=dynamic_probability,
         obstacle_speed_range=obstacle_speed_range,
     )
-    vec_env = make_vec_env(scenario, n_envs=n_envs, seed=seed)
-
-    policy_kwargs = dict(activation_fn=torch.nn.ReLU, net_arch=[256, 256])
-
-    model = PPO(
-        "MlpPolicy",
-        vec_env,
-        learning_rate=3e-4,
-        n_steps=2048 // n_envs,
-        batch_size=256,
-        n_epochs=10,
-        gamma=0.995,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.005,
-        vf_coef=0.5,
-        policy_kwargs=policy_kwargs,
-        verbose=1,
-        tensorboard_log=str(log_dir / "tensorboard"),
-        device="cuda" if torch.cuda.is_available() else "auto",
+    vec_env = make_vec_env(
+        scenario,
+        n_envs=n_envs,
         seed=seed,
+        normalize=critic_strong,
     )
 
-    callback = RewardCheckpoint(check_freq=5_000 // n_envs, save_path=log_dir, verbose=1)
+    if critic_strong:
+        policy_kwargs = dict(net_arch=[dict(pi=[64, 64], vf=[128, 128, 64])])
+        model = PPO(
+            "MlpPolicy",
+            vec_env,
+            learning_rate=3e-4,
+            n_steps=4096,
+            batch_size=256,
+            n_epochs=15,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.005,
+            vf_coef=1.2,
+            clip_range_vf=0.2,
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            tensorboard_log=str(log_dir / "tensorboard"),
+            device="cuda" if torch.cuda.is_available() else "auto",
+            seed=seed,
+        )
+    else:
+        policy_kwargs = dict(activation_fn=torch.nn.ReLU, net_arch=[256, 256])
+        model = PPO(
+            "MlpPolicy",
+            vec_env,
+            learning_rate=3e-4,
+            n_steps=2048 // n_envs,
+            batch_size=256,
+            n_epochs=10,
+            gamma=0.995,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.005,
+            vf_coef=0.5,
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            tensorboard_log=str(log_dir / "tensorboard"),
+            device="cuda" if torch.cuda.is_available() else "auto",
+            seed=seed,
+        )
+
+    checkpoint_callback = RewardCheckpoint(
+        check_freq=5_000 // n_envs,
+        save_path=log_dir,
+        verbose=1,
+    )
+    diagnostics_callback = ValueDiagnosticsCallback(verbose=1)
+    callback = CallbackList([checkpoint_callback, diagnostics_callback])
 
     print("=" * 70)
     print("Training PPO agent for APF-RRT parameter optimisation")
@@ -536,21 +626,43 @@ def train_agent(
     duration = time.time() - start
     print(f"Training finished in {duration / 60:.1f} minutes")
 
+    if critic_strong and isinstance(vec_env, VecNormalize):
+        vec_env.training = False
+        vec_env.norm_reward = False
+        stats_path = log_dir / "obs_normalizer.npz"
+        np.savez(
+            stats_path,
+            mean=vec_env.obs_rms.mean,
+            var=vec_env.obs_rms.var,
+            clip=np.array(vec_env.clip_obs, dtype=np.float32),
+            epsilon=np.array(getattr(vec_env, "epsilon", 1e-8), dtype=np.float32),
+        )
+        print(f"Saved observation normalisation statistics to {stats_path}")
+
     final_path = log_dir / "final_model"
     model.save(final_path)
     print(f"Saved final model to {final_path}")
     return model
 
 
-def load_agent(model_path: Path) -> PPO:
+def load_agent(model_path: Path) -> Tuple[PPO, Optional[ObservationNormalizer]]:
     model_path = Path(model_path)
     if model_path.is_dir():
         model_path = model_path / "best_model.zip"
-    return PPO.load(model_path)
+    model = PPO.load(model_path)
+
+    normalizer_path = model_path.parent / "obs_normalizer.npz"
+    normalizer: Optional[ObservationNormalizer]
+    if normalizer_path.exists():
+        normalizer = ObservationNormalizer.from_file(normalizer_path)
+    else:
+        normalizer = None
+    return model, normalizer
 
 
 def benchmark_agent(
     agent: PPO,
+    normalizer: Optional[ObservationNormalizer] = None,
     n_episodes: int = 40,
     difficulty: str = "medium",
     dynamic: bool = False,
@@ -570,14 +682,22 @@ def benchmark_agent(
 
     for _ in range(n_episodes):
         obs, _ = env.reset()
+        if normalizer is not None:
+            agent_obs = normalizer.normalize(obs)
+        else:
+            agent_obs = obs
         done = False
         truncated = False
         episode_collided = False
         step_times: List[float] = []
 
         while not (done or truncated):
-            action, _ = agent.predict(obs, deterministic=True)
+            action, _ = agent.predict(agent_obs, deterministic=True)
             obs, _, done, truncated, info = env.step(action)
+            if normalizer is not None:
+                agent_obs = normalizer.normalize(obs)
+            else:
+                agent_obs = obs
             step_times.append(info.get("step_ms", 0.0))
             if info.get("collision", 0.0):
                 episode_collided = True
@@ -613,11 +733,13 @@ class RLEnhancedPlanner:
         agent: Optional[PPO] = None,
         config: Optional[Dict[str, Any]] = None,
         scenario: Optional[ScenarioConfig] = None,
+        normalizer: Optional[ObservationNormalizer] = None,
     ) -> None:
         self.agent = agent
         self.config: Dict[str, Any] = config or {}
         self.parameters = PlannerParameters()
         self.scenario = scenario or ScenarioConfig(dynamic_probability=0.0)
+        self.normalizer = normalizer
 
     def plan(
         self,
@@ -671,6 +793,8 @@ class RLEnhancedPlanner:
 
             for iteration in range(max_iters):
                 state = env._get_state()
+                if self.normalizer is not None:
+                    state = self.normalizer.normalize(state)
                 action, _ = self.agent.predict(state, deterministic=True)
                 env.parameters.apply_delta(action)
 
@@ -849,6 +973,19 @@ def _parse_args() -> argparse.Namespace:
     )
     train_parser.add_argument("--seed", type=int, default=42)
     train_parser.add_argument("--log-dir", type=Path, default=Path("./models"))
+    train_parser.add_argument(
+        "--critic-strong",
+        dest="critic_strong",
+        action="store_true",
+        help="Enable the enhanced critic architecture and reward normalisation",
+    )
+    train_parser.add_argument(
+        "--no-critic-strong",
+        dest="critic_strong",
+        action="store_false",
+        help="Disable the enhanced critic configuration (revert to legacy settings)",
+    )
+    train_parser.set_defaults(critic_strong=True)
 
     test_parser = subparsers.add_parser("test", help="Evaluate with a trained agent")
     test_parser.add_argument("--model", type=Path, default=Path("./models/best_model.zip"))
@@ -892,11 +1029,12 @@ def main() -> None:
             obstacle_speed_range=obstacle_speed_range,
             log_dir=args.log_dir,
             seed=args.seed,
+            critic_strong=args.critic_strong,
         )
         return
 
     if args.mode == "benchmark":
-        agent = load_agent(args.model)
+        agent, normalizer = load_agent(args.model)
         scenario_flags = [False]
         if args.dynamic:
             scenario_flags.append(True)
@@ -905,6 +1043,7 @@ def main() -> None:
         for dynamic_flag in scenario_flags:
             metrics = benchmark_agent(
                 agent,
+                normalizer,
                 n_episodes=args.episodes,
                 difficulty=args.difficulty,
                 dynamic=dynamic_flag,
@@ -931,12 +1070,12 @@ def main() -> None:
         print(" | ".join(time_row))
         return
 
-    agent = load_agent(args.model)
+    agent, normalizer = load_agent(args.model)
     scenario = ScenarioConfig(
         difficulty=args.difficulty,
         dynamic_probability=1.0 if getattr(args, "dynamic", False) else 0.0,
     )
-    planner = RLEnhancedPlanner(agent, scenario=scenario)
+    planner = RLEnhancedPlanner(agent, scenario=scenario, normalizer=normalizer)
 
     q_start = np.array([0.8, 1.2, -0.6, -0.4, 0.5, 0.2])
     q_goal = np.zeros(6)
