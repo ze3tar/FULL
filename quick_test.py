@@ -213,11 +213,23 @@ def generate_quick_demo():
 
 def main():
     print_header("ML-Enhanced APF-RRT - Quick Test Suite")
-    
+
     print("\nThis script tests all components to verify your setup.")
     print("It should take 2-3 minutes to complete.")
     print("\nPress Enter to start...")
-    input()
+    auto_start = ('--auto' in sys.argv) or ('-y' in sys.argv) or ('--yes' in sys.argv)
+
+    if auto_start:
+        print("\nAuto-start flag detected. Beginning tests immediately...")
+    else:
+        stdin = getattr(sys, 'stdin', None)
+        if stdin is not None and stdin.isatty():
+            try:
+                input()
+            except (EOFError, KeyboardInterrupt):
+                print("\nInput interrupted. Continuing with tests...")
+        else:
+            print("\nNon-interactive environment detected. Beginning tests automatically...")
     
     # Track results
     results = {}
@@ -299,8 +311,19 @@ def main():
         print("    2. Start with Week 1-2 tasks (ROS integration)")
         print("    3. Run: python3 rl_enhanced_apf_rrt.py train")
         print("\n  Optional: Generate a quick demo?")
-        response = input("  Generate demo now? (y/n): ")
-        
+        response = 'n'
+        if auto_start:
+            print("  Skipping demo prompt in auto-start mode.")
+        else:
+            stdin = getattr(sys, 'stdin', None)
+            if stdin is not None and stdin.isatty():
+                try:
+                    response = input("  Generate demo now? (y/n): ")
+                except (EOFError, KeyboardInterrupt):
+                    print("  Input interrupted. Skipping demo generation.")
+            else:
+                print("  Non-interactive environment detected. Skipping demo generation.")
+
         if response.lower() == 'y':
             generate_quick_demo()
     else:
