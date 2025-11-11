@@ -921,13 +921,14 @@ def main() -> None:
             velocity = np.zeros(scenario.n_joints)
         obstacles.append(ObstacleState(centre.copy(), radius, velocity))
 
-    path, nodes, metrics = planner.plan(q_start, q_goal, obstacles)
+    path, nodes, plan_time, metrics = planner.plan(q_start, q_goal, obstacles)
     if path is None:
         print("✗ Failed to find a collision-free path")
     else:
         print("✓ Path found")
         print(f"Iterations: {metrics['iterations']}")
         print(f"Nodes: {metrics['nodes']}")
+        print(f"Planning time: {plan_time:.3f}s")
         print(f"Dynamic scenario: {bool(metrics['dynamic'])}")
         print("Final parameters:", metrics["final_params"])
         if getattr(args, "plot", False):
