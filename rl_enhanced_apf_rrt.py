@@ -26,10 +26,18 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+
+try:  # pragma: no cover - optional dependency guard
+    import tensorflow as tf  # type: ignore
+except Exception:  # pragma: no cover - TensorFlow is optional
+    tf = None  # type: ignore
 
 import numpy as np
 import torch
@@ -600,8 +608,14 @@ def benchmark_agent(
 class RLEnhancedPlanner:
     """Plan paths with a trained PPO agent adjusting APF parameters."""
 
-    def __init__(self, agent: PPO, scenario: Optional[ScenarioConfig] = None) -> None:
+    def __init__(
+        self,
+        agent: Optional[PPO] = None,
+        config: Optional[Dict[str, Any]] = None,
+        scenario: Optional[ScenarioConfig] = None,
+    ) -> None:
         self.agent = agent
+        self.config: Dict[str, Any] = config or {}
         self.parameters = PlannerParameters()
         self.scenario = scenario or ScenarioConfig(dynamic_probability=0.0)
 
@@ -613,6 +627,11 @@ class RLEnhancedPlanner:
         max_iters: int = 5_000,
         scenario: Optional[ScenarioConfig] = None,
     ) -> Tuple[Optional[List[np.ndarray]], List[np.ndarray], float, Dict[str, float]]:
+        if self.agent is None:
+            raise ValueError(
+                "Agent not initialized. Please provide a trained RL agent or set "
+                "agent=None for benchmarks."
+            )
         scenario_cfg = scenario or self.scenario
         env = APFRRTEnv(scenario_cfg)
         env.q_start = q_start.copy()
