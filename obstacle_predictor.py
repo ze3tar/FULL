@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""
-LSTM-based Obstacle Motion Predictor for Dynamic Path Planning
-Predicts future obstacle positions based on movement history
+"""LSTM-based obstacle motion predictor for dynamic path planning.
+
+The module provides utilities to train an LSTM model that predicts future
+obstacle positions from short motion histories.  The predictor is used by the
+RL-enhanced APF-RRT planner to anticipate collisions in dynamic environments.
 """
 
 import numpy as np
