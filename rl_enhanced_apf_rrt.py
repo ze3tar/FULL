@@ -612,7 +612,7 @@ class RLEnhancedPlanner:
         obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]],
         max_iters: int = 5_000,
         scenario: Optional[ScenarioConfig] = None,
-    ) -> Tuple[Optional[List[np.ndarray]], List[np.ndarray], Dict[str, float]]:
+    ) -> Tuple[Optional[List[np.ndarray]], List[np.ndarray], float, Dict[str, float]]:
         scenario_cfg = scenario or self.scenario
         env = APFRRTEnv(scenario_cfg)
         env.q_start = q_start.copy()
@@ -624,6 +624,7 @@ class RLEnhancedPlanner:
         env._step_index = 0
 
         parents: Dict[int, Optional[int]] = {0: None}
+        start_time = time.perf_counter()
 
         for iteration in range(max_iters):
             state = env._get_state()
@@ -647,21 +648,29 @@ class RLEnhancedPlanner:
 
             if np.linalg.norm(q_new - env.q_goal) < 0.2:
                 path = self._reconstruct_path(parents, len(env.nodes) - 1, env.nodes, env.q_goal)
-                metrics = {
-                    "iterations": iteration + 1,
-                    "nodes": len(env.nodes),
-                    "final_params": env.parameters.to_array(),
-                    "dynamic": float(env._dynamic_active),
-                }
-                return path, env.nodes, metrics
+                plan_time = float(time.perf_counter() - start_time)
+                metrics = self._build_metrics(env, iteration + 1)
+                return path, env.nodes, plan_time, metrics
 
-        metrics = {
-            "iterations": max_iters,
-            "nodes": len(env.nodes),
-            "final_params": env.parameters.to_array(),
+        plan_time = float(time.perf_counter() - start_time)
+        metrics = self._build_metrics(env, max_iters)
+        return None, env.nodes, plan_time, metrics
+
+    @staticmethod
+    def _build_metrics(env: APFRRTEnv, iterations: int) -> Dict[str, float]:
+        params = env.parameters
+        final_params = params.to_array()
+        return {
+            "iterations": float(iterations),
+            "nodes": float(len(env.nodes)),
+            "final_params": final_params,
             "dynamic": float(env._dynamic_active),
+            "K_att_final": float(params.attractive_gain),
+            "K_rep_final": float(params.repulsive_gain),
+            "influence_distance_final": float(params.influence_distance),
+            "step_size_final": float(params.step_size),
+            "goal_bias_final": float(params.goal_bias),
         }
-        return None, env.nodes, metrics
 
     @staticmethod
     def _reconstruct_path(
@@ -690,6 +699,19 @@ class RLEnhancedPlanner:
         if centre_arr.shape[0] != n_joints:
             raise ValueError("Obstacle dimension mismatch with scenario joints")
         return ObstacleState(centre_arr, float(radius), np.zeros(n_joints, dtype=np.float32))
+
+
+# ---------------------------------------------------------------------------
+# Backwards compatibility aliases
+# ---------------------------------------------------------------------------
+
+
+class RLEnhancedAPF_RRT(RLEnhancedPlanner):
+    """Compatibility wrapper preserving the legacy class name."""
+
+
+class APF_RRT_Environment(APFRRTEnv):
+    """Compatibility wrapper used by older quick-test scripts."""
 
 
 # ---------------------------------------------------------------------------

@@ -102,20 +102,21 @@ def test_pso():
 def test_rl_setup():
     """Test RL environment setup"""
     try:
-        from rl_enhanced_apf_rrt import APF_RRT_Environment
-        
+        from config_space_apf_rrt import ConfigSpaceAPF_RRT, ConfigSpaceSettings
+
         print("  Creating RL training environment...")
-        env = APF_RRT_Environment(difficulty='easy', max_steps=10)
-        
+        env = ConfigSpaceAPF_RRT(ConfigSpaceSettings(difficulty='easy'))
+
         print("  Testing environment step...")
         state, info = env.reset()
         action = env.action_space.sample()
         next_state, reward, done, truncated, info = env.step(action)
-        
+
         print(f"  ✓ State shape: {state.shape}")
         print(f"  ✓ Action shape: {action.shape}")
         print(f"  ✓ Reward: {reward:.2f}")
-        
+
+        env.close()
         return True
     except Exception as e:
         print(f"  ✗ Error: {e}")
@@ -294,9 +295,9 @@ def main():
         print("="*70)
         print("\n  Your setup is ready!")
         print("\n  Next steps:")
-        print("    1. Read IMPLEMENTATION_ROADMAP.md")
+        print("    1. Read SUMMARY.md for the roadmap overview")
         print("    2. Start with Week 1-2 tasks (ROS integration)")
-        print("    3. Run: python3 rl_enhanced_apf_rrt.py --mode train")
+        print("    3. Run: python3 rl_enhanced_apf_rrt.py train")
         print("\n  Optional: Generate a quick demo?")
         response = input("  Generate demo now? (y/n): ")
         
