@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Arguments -->
+  <arg name="use_rviz" default="true"/>
+  <arg name="planner_type" default="config_space"/>  <!-- "config_space" or "bridge" -->
+  
+  <!-- Load robot description (adjust path to your RM65-6F URDF) -->
+  <param name="robot_description" 
+         command="$(find xacro)/xacro '$(find rm65_6f_description)/urdf/rm65_6f.urdf.xacro'"/>
+  
+  <!-- Start robot state publisher -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/>
+  
+  <!-- Start MoveIt -->
+  <include file="$(find rm65_6f_moveit_config)/launch/move_group.launch">
+    <arg name="allow_trajectory_execution" value="true"/>
+    <arg name="fake_execution" value="true"/>  <!-- Set to false for real robot -->
+    <arg name="info" value="true"/>
+    <arg name="debug" value="false"/>
+  </include>
+  
+  <!-- Start RViz with MoveIt config -->
+  <include file="$(find rm65_6f_moveit_config)/launch/moveit_rviz.launch" if="$(arg use_rviz)">
+    <arg name="rviz_config" value="$(find rm65_6f_moveit_config)/launch/moveit.rviz"/>
+  </include>
+  
+  <!-- Start APF-RRT planner -->
+  <node name="apf_rrt_planner" pkg="apf_rrt_planner" type="$(arg planner_type).py" output="screen">
+    <!-- Planner parameters -->
+    <param name="max_iterations" value="5000"/>
+    <param name="step_size" value="0.3"/>
+    <param name="goal_radius" value="0.2"/>
+    <param name="goal_bias" value="0.07"/>
+    
+    <!-- APF parameters -->
+    <param name="K_att" value="1.0"/>
+    <param name="K_rep" value="0.3"/>
+    <param name="influence_distance" value="1.5"/>
+  </node>
+  
+  <!-- Optional: Load obstacle scene -->
+  <node name="obstacle_scene_loader" pkg="apf_rrt_planner" type="load_obstacles.py" output="screen">
+    <param name="obstacle_file" value="$(find apf_rrt_planner)/data/obstacles.yaml"/>
+  </node>
+  
+</launch>
