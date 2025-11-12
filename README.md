@@ -48,3 +48,43 @@ python rl_enhanced_apf_rrt.py test --plot
 
 Refer to `SUMMARY.md` and `ML_ENHANCEMENT_ARCHITECTURE.md` for a deeper dive
 into the system design and component interactions.
+
+## ROS 2 Visualization with RViz
+
+The repository ships with a ROS 2 package, `full_visualizer`, that publishes
+fake joint states, loads the robot model, and opens an RViz configuration for a
+quick visualization demo.
+
+### Prerequisites
+
+* ROS 2 Humble (or newer) with `rviz2`, `joint_state_publisher_gui`, and
+  `robot_state_publisher` installed.
+* A colcon workspace (the repo already contains one under `ros2_ws`).
+
+Source your ROS 2 environment and enter the workspace:
+
+```bash
+source /opt/ros/humble/setup.bash  # adjust to your ROS 2 distribution
+cd ros2_ws
+```
+
+### Build the Visualizer Package
+
+```bash
+colcon build --packages-select full_visualizer
+source install/setup.bash
+```
+
+### Launch RViz
+
+```bash
+ros2 launch full_visualizer full_viz.launch.py
+```
+
+The launch file will:
+
+* start `joint_state_publisher_gui` so you can interactively move robot joints,
+* run `robot_state_publisher` with the URDF in `ros2_ws/src/full_visualizer/urdf`,
+* open RViz with the configuration at `ros2_ws/src/full_visualizer/rviz/full.rviz`,
+* spin up a placeholder node that periodically publishes to
+  `/chatgpt_codex_cmd` for future AI integrations.
