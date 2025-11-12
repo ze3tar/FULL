@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>full_visualizer</name>
+  <version>0.0.1</version>
+  <description>Visualization tools for the FULL robot model in RViz.</description>
+  <maintainer email="example@example.com">ChatGPT</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>rviz2</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>joint_state_publisher_gui</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
