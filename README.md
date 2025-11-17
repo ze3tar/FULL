@@ -97,7 +97,7 @@ To reproduce the full training run on Google Colab, execute the following
 commands in a notebook cell:
 
 ```bash
-!git clone https://github.com/<your-fork>/RL-Enhanced-APF-RRT.git
+!git clone https://github.com/ze3tar/FULL.git
 %cd RL-Enhanced-APF-RRT
 !pip install -r requirements.txt
 !python rl_enhanced_apf_rrt.py train \
