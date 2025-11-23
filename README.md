@@ -98,7 +98,7 @@ commands in a notebook cell:
 
 ```bash
 !git clone https://github.com/ze3tar/FULL.git
-%cd RL-Enhanced-APF-RRT
+%cd FULL/
 !pip install -r requirements.txt
 !python rl_enhanced_apf_rrt.py train \
     --timesteps 5000000 \
