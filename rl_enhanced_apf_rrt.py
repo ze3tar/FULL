@@ -245,11 +245,12 @@ class APFRRTEnv(Env):
         done = False
         truncated = False
         info: Dict[str, float] = {}
-        reward = -0.1  # default time penalty
+        reward = -1.0  # default time penalty to discourage idling
         collision_flag = False
+        action_magnitude = float(np.linalg.norm(action))
 
         if self._in_collision(q_new):
-            reward -= 5.0
+            reward -= 1000.0
             collision_flag = True
         else:
             self.nodes.append(q_new)
@@ -258,15 +259,24 @@ class APFRRTEnv(Env):
             old_dist = np.linalg.norm(q_near - self.q_goal)
             new_dist = np.linalg.norm(q_new - self.q_goal)
             progress = old_dist - new_dist
-            reward += 9.0 * progress
+            reward += 150.0 * progress
+
+            # Explicitly penalise near-stationary behaviour
+            if progress <= 1e-4:
+                reward -= 5.0
 
             min_clearance = self._minimum_clearance(q_new)
             reward += 2.0 * math.tanh(max(min_clearance - 0.1, 0.0))
 
             if new_dist < self.scenario.goal_tolerance:
-                reward += 120.0
+                reward += 1000.0
                 done = True
+                info["is_success"] = True
                 info["reached_goal"] = 1.0
+
+        # Penalise selecting vanishingly small actions even if no collision occurs
+        if action_magnitude < 1e-3:
+            reward -= 2.0
 
         reward -= 0.01 * len(self.nodes)
 
@@ -277,13 +287,11 @@ class APFRRTEnv(Env):
             done = True
             truncated = True
             info["timeout"] = 1.0
-            reward -= 40.0
-
-        # 🔧 PPO stabilization: scale reward to reduce variance
-        reward = reward / 20.0
+            reward -= 1000.0
 
         self._advance_obstacles()
 
+        info["distance_to_goal"] = float(np.linalg.norm(self.q_current - self.q_goal))
         info["clearance"] = float(self._minimum_clearance(self.q_current))
         info["dynamic"] = float(self._dynamic_active)
         info["nearest_index"] = float(idx_near)
@@ -687,54 +695,64 @@ def benchmark_agent(
     difficulty: str = "medium",
     dynamic: bool = False,
     seed: int = 123,
-) -> BenchmarkMetrics:
+    seeds: Optional[Sequence[int]] = None,
+    ) -> BenchmarkMetrics:
     """Evaluate an agent and summarise success / collision metrics."""
 
-    scenario = ScenarioConfig(
-        difficulty=difficulty,
-        dynamic_probability=1.0 if dynamic else 0.0,
-    )
-    env = APFRRTEnv(scenario, seed=seed)
+    seeds_to_use: Sequence[int] = list(seeds) if seeds is not None else [seed]
 
     successes = 0
     collision_episodes = 0
     replanning_times: List[float] = []
+    total_episodes = 0
 
-    for _ in range(n_episodes):
-        obs, _ = env.reset()
-        if normalizer is not None:
-            agent_obs = normalizer.normalize(obs)
-        else:
-            agent_obs = obs
-        done = False
-        truncated = False
-        episode_collided = False
-        step_times: List[float] = []
+    for eval_seed in seeds_to_use:
+        scenario = ScenarioConfig(
+            difficulty=difficulty,
+            dynamic_probability=1.0 if dynamic else 0.0,
+        )
+        env = APFRRTEnv(scenario, seed=eval_seed)
 
-        while not (done or truncated):
-            action, _ = agent.predict(agent_obs, deterministic=True)
-            obs, _, done, truncated, info = env.step(action)
+        for episode_idx in range(n_episodes):
+            total_episodes += 1
+            obs, _ = env.reset()
             if normalizer is not None:
                 agent_obs = normalizer.normalize(obs)
             else:
                 agent_obs = obs
-            step_times.append(info.get("step_ms", 0.0))
-            if info.get("collision", 0.0):
-                episode_collided = True
+            done = False
+            truncated = False
+            episode_collided = False
+            step_times: List[float] = []
 
-        if info.get("reached_goal", 0.0):
-            successes += 1
-        if episode_collided:
-            collision_episodes += 1
-        if step_times:
-            replanning_times.append(float(np.mean(step_times)))
+            while not (done or truncated):
+                action, _ = agent.predict(agent_obs, deterministic=True)
+                obs, _, done, truncated, info = env.step(action)
+                if normalizer is not None:
+                    agent_obs = normalizer.normalize(obs)
+                else:
+                    agent_obs = obs
+                step_times.append(info.get("step_ms", 0.0))
+                if info.get("collision", 0.0):
+                    episode_collided = True
+                if info.get("is_success"):
+                    print(
+                        f"SUCCESS at seed={eval_seed} episode={episode_idx} step={env._step_index}"
+                    )
+
+            if info.get("reached_goal", 0.0):
+                successes += 1
+            if episode_collided:
+                collision_episodes += 1
+            if step_times:
+                replanning_times.append(float(np.mean(step_times)))
 
     if not replanning_times:
         replanning_times.append(0.0)
 
     return BenchmarkMetrics(
-        success_rate=successes / max(n_episodes, 1),
-        collision_free_rate=1.0 - collision_episodes / max(n_episodes, 1),
+        success_rate=successes / max(total_episodes, 1),
+        collision_free_rate=1.0 - collision_episodes / max(total_episodes, 1),
         avg_replanning_time_ms=float(np.mean(replanning_times)),
         dynamic=dynamic,
     )
@@ -1025,6 +1043,12 @@ def _parse_args() -> argparse.Namespace:
     benchmark_parser.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
     benchmark_parser.add_argument("--seed", type=int, default=123)
     benchmark_parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        help="Optional list of seeds to evaluate; overrides --seed when provided",
+    )
+    benchmark_parser.add_argument(
         "--dynamic",
         action="store_true",
         help="Also evaluate on dynamic obstacle scenarios",
@@ -1068,6 +1092,7 @@ def main() -> None:
                 difficulty=args.difficulty,
                 dynamic=dynamic_flag,
                 seed=args.seed,
+                seeds=args.seeds,
             )
             results["Dynamic" if dynamic_flag else "Static"] = metrics
 
