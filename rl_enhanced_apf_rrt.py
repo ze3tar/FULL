@@ -279,6 +279,9 @@ class APFRRTEnv(Env):
             info["timeout"] = 1.0
             reward -= 40.0
 
+        # 🔧 PPO stabilization: scale reward to reduce variance
+        reward = reward / 20.0
+
         self._advance_obstacles()
 
         info["clearance"] = float(self._minimum_clearance(self.q_current))
@@ -575,6 +578,9 @@ def train_agent(
         normalize=critic_strong,
     )
 
+    if critic_strong and not isinstance(vec_env, VecNormalize):
+        vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+
     if critic_strong:
         policy_kwargs = dict(net_arch=dict(pi=[64, 64], vf=[128, 128, 64]))
         model = PPO(
@@ -605,7 +611,7 @@ def train_agent(
             "MlpPolicy",
             vec_env,
             learning_rate=3e-4,
-            n_steps=2048 // n_envs,
+            n_steps=4096,
             batch_size=256,
             n_epochs=10,
             gamma=0.995,
