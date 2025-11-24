@@ -61,8 +61,10 @@ except Exception:  # pragma: no cover - optional dependency
 # Success criterion
 # ---------------------------------------------------------------------------
 
+DEFAULT_GOAL_TOLERANCE = 0.2
 
-def is_success(ee_pos: np.ndarray, goal_pos: np.ndarray, threshold: float = 0.01) -> bool:
+
+def is_success(ee_pos: np.ndarray, goal_pos: np.ndarray, threshold: float = DEFAULT_GOAL_TOLERANCE) -> bool:
     """Return True if end-effector reached goal."""
 
     return np.linalg.norm(ee_pos - goal_pos) < threshold
@@ -131,7 +133,8 @@ class ScenarioConfig:
     joint_min: float = -math.pi
     joint_max: float = math.pi
     n_joints: int = 6
-    goal_tolerance: float = 0.18
+    # Shared across training and evaluation; matches ROS launch default goal_radius.
+    goal_tolerance: float = DEFAULT_GOAL_TOLERANCE
     dynamic_probability: float = 0.45
     obstacle_speed_range: Tuple[float, float] = (0.05, 0.35)
     dynamic_time_step: float = 0.08
@@ -390,6 +393,11 @@ class APFRRTEnv(Env):
         path.reverse()
         return path
 
+    def _goal_reached(self, q: np.ndarray) -> bool:
+        """Unified success check used by training and benchmarks."""
+
+        return is_success(q, self.q_goal, self.scenario.goal_tolerance)
+
     def _run_planning_episode(self) -> PlanResult:
         self.nodes = [self.q_start.copy()]
         parents: Dict[int, Optional[int]] = {0: None}
@@ -421,7 +429,7 @@ class APFRRTEnv(Env):
             path_length += float(np.linalg.norm(q_new - q_near))
             self.q_current = q_new
 
-            if is_success(q_new, self.q_goal):
+            if self._goal_reached(q_new):
                 success = True
                 path = self._reconstruct_path(parents, len(self.nodes) - 1, self.nodes, self.q_goal)
                 break
@@ -891,18 +899,20 @@ class RLEnhancedPlanner:
 
             result = env._run_planning_episode()
             plan_time = result.planning_time
+            # Always derive success from the unified goal check so evaluation matches training.
+            success_flag = bool(result.path is not None and env._goal_reached(result.path[-1]))
             metrics = self._build_metrics(env, env.scenario.max_steps)
             metrics.update(
                 {
                     "restart_attempts": float(attempt + 1),
-                    "success": float(result.success),
+                    "success": float(success_flag),
                     "collision": float(result.collision),
                     "path_length": result.path_length,
                     "planning_time": result.planning_time,
                 }
             )
 
-            if result.path is not None:
+            if success_flag:
                 return result.path, env.nodes, plan_time, metrics
 
             last_plan_time = plan_time
