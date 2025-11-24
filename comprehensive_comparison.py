@@ -338,11 +338,15 @@ class PlanningBenchmark:
                 'K_rep_final': np.nan,
             }
 
-        success = bool(result.get('success', False))
-        path = result.get('path', [])
-        nodes = result.get('nodes', [])
-        plan_time = float(result.get('planning_time', float('nan')))
-        metrics = result.get('metrics', {})
+        info = result
+        if "planning_time" not in info:
+            print("DEBUG: Missing planning_time in planner result", info)
+
+        success = bool(info.get('success', False))
+        path = info.get('path', [])
+        nodes = info.get('nodes', [])
+        plan_time = float(info.get('planning_time', float('nan')))
+        metrics = info.get('metrics', {})
 
         # Convert the path and nodes back into workspace coordinates (0–100)
         # using the inverse of the linear mapping.  Only the first three
@@ -358,8 +362,8 @@ class PlanningBenchmark:
         return {
             'success': success,
             'planning_time': plan_time,
-            'nodes_explored': len(nodes),
-            'path_length': result.get('path_length', path_length(path) if success else np.nan),
+            'nodes_explored': float(info.get('num_nodes', len(nodes))),
+            'path_length': info.get('path_length', path_length(path) if success else np.nan),
             'path': path,
             'nodes': nodes,
             'K_att_final': metrics.get('K_att_final', np.nan) if metrics else np.nan,
