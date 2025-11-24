@@ -205,17 +205,13 @@ class APFRRTEnv(Env):
         self.rng = np.random.default_rng(seed)
         self.debug = debug
 
-        # Observation encodes planner state + tunables so PPO can correlate them
-        # with progress: distance, heading, obstacle info, parameter vector.
-        low = np.array(
-            [0.0, -1.0, 0.0, 0.0] + [p[0] for p in self._parameter_bounds()],
+        # Observation encodes progress signals and current planner parameters.
+        obs_len = 4 + 5 + 1
+        self.observation_space = spaces.Box(
+            low=-np.ones(obs_len, dtype=np.float32),
+            high=np.ones(obs_len, dtype=np.float32),
             dtype=np.float32,
         )
-        high = np.array(
-            [1.0, 1.0, 1.0, 1.0] + [p[1] for p in self._parameter_bounds()],
-            dtype=np.float32,
-        )
-        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
         # Action is applied as small parameter deltas.
         self.action_space = spaces.Box(
@@ -229,8 +225,13 @@ class APFRRTEnv(Env):
         self.obstacles: List[Obstacle] = []
         self._dynamic_active = False
         self.nodes: List[np.ndarray] = []
+        self.parents: Dict[int, int] = {}
         self._step_index = 0
         self._last_path: Optional[List[np.ndarray]] = None
+        self._path_length = 0.0
+        self._planning_start_time = time.perf_counter()
+        self.prev_dist = 0.0
+        self._last_progress = 0.0
 
         self.reset()
 
@@ -244,10 +245,7 @@ class APFRRTEnv(Env):
         self._dynamic_active = self.rng.random() < self.scenario.dynamic_probability
         self.q_start = self.scenario.sample_configuration(self.rng)
         self.q_goal = self.scenario.sample_configuration(self.rng)
-        self.q_current = self.q_start.copy()
-        self.nodes = [self.q_start.copy()]
-        self.obstacles = self._generate_obstacles(self.scenario.obstacle_count)
-        self._step_index = 0
+        self._reset_planning_state()
         return self._get_state(), {}
 
     def step(self, action: np.ndarray):
@@ -255,35 +253,46 @@ class APFRRTEnv(Env):
         self._step_index += 1
         self.parameters.apply_delta(action)
 
-        result = self._run_planning_episode()
+        success, collision, _ = self._rrt_expand_step()
 
-        reward = 0.0
-        reward -= 0.05 * result.path_length
-        reward -= 0.1 * result.planning_time
-        reward -= 0.01 * result.num_nodes
-        if result.success:
+        dist = float(np.linalg.norm(self.q_current - self.q_goal))
+        min_clearance = float(self._minimum_clearance(self.q_current))
+        progress = self.prev_dist - dist
+
+        w1, w2 = 10.0, 1.0
+        reward = (w1 * progress) + (w2 * min_clearance) - 0.01
+        done = False
+        if success:
             reward += 1000.0
-        if result.collision:
+            done = True
+        if collision:
             reward -= 500.0
+            done = True
+        if self._step_index >= self.scenario.max_steps:
+            done = True
+            reward -= 200.0
+
+        self.prev_dist = dist
+        self._last_progress = progress
 
         info: Dict[str, float] = {
-            "is_success": result.success,
-            "collision": result.collision,
-            "path_length": result.path_length,
-            "planning_time": result.planning_time,
-            "num_nodes": float(result.num_nodes),
+            "is_success": success,
+            "collision": collision,
+            "path_length": self._path_length,
+            "planning_time": float(time.perf_counter() - self._planning_start_time),
+            "num_nodes": float(len(self.nodes)),
             "step_ms": float((time.perf_counter() - step_start) * 1_000.0),
-            "clearance": float(self._minimum_clearance(self.q_current)),
-            "distance_to_goal": float(np.linalg.norm(self.q_current - self.q_goal)),
+            "clearance": min_clearance,
+            "distance_to_goal": dist,
         }
         if self.debug:
             print(
-                f"[DEBUG] Params: {self.parameters.to_array()} | Success: {result.success} "
-                f"| Collision: {result.collision} | Path length: {result.path_length:.3f} "
-                f"| Planning time: {result.planning_time:.3f}s | Nodes: {result.num_nodes}"
+                f"[DEBUG] Params: {self.parameters.to_array()} | Success: {success} "
+                f"| Collision: {collision} | Path length: {self._path_length:.3f} "
+                f"| Nodes: {len(self.nodes)}"
             )
 
-        return self._get_state(), float(reward), True, False, info
+        return self._get_state(), float(reward), done, False, info
 
     def render(self):  # pragma: no cover - simple debug rendering
         print(
@@ -317,6 +326,21 @@ class APFRRTEnv(Env):
             obstacles.append(ObstacleState(centre, radius, velocity))
         return obstacles
 
+    def _reset_planning_state(self, obstacles: Optional[Sequence[Obstacle]] = None) -> None:
+        self.q_current = self.q_start.copy()
+        self.nodes = [self.q_start.copy()]
+        self.parents = {0: None}
+        if obstacles is None:
+            self.obstacles = self._generate_obstacles(self.scenario.obstacle_count)
+        else:
+            self.obstacles = [obs.copy() if isinstance(obs, ObstacleState) else obs for obs in obstacles]
+        self._step_index = 0
+        self._last_path = None
+        self._path_length = 0.0
+        self._planning_start_time = time.perf_counter()
+        self.prev_dist = float(np.linalg.norm(self.q_start - self.q_goal))
+        self._last_progress = 0.0
+
     def _sample_random_configuration(self) -> np.ndarray:
         if self.rng.random() < self.parameters.goal_bias:
             return self.q_goal
@@ -342,6 +366,36 @@ class APFRRTEnv(Env):
         weights = np.array([0.45, 0.35, 0.20], dtype=np.float32)
         direction = (weights[:, None] * components).sum(axis=0)
         return direction / (np.linalg.norm(direction) + 1e-9)
+
+    def _rrt_expand_step(self) -> Tuple[bool, bool, Optional[List[np.ndarray]]]:
+        q_rand = self._sample_random_configuration()
+        idx_near, q_near = self._find_nearest_node(q_rand)
+        direction = self._compute_direction(q_near, q_rand)
+        q_new = np.clip(
+            q_near + direction * self.parameters.step_size,
+            self.scenario.joint_min,
+            self.scenario.joint_max,
+        )
+
+        collision = self._in_collision(q_new)
+        if collision:
+            return False, True, None
+
+        self.nodes.append(q_new)
+        self.parents[len(self.nodes) - 1] = idx_near
+        step_length = float(np.linalg.norm(q_new - q_near))
+        self._path_length += step_length
+        self.q_current = q_new
+
+        success = is_success(q_new, self.q_goal, self.scenario.goal_tolerance)
+        path: Optional[List[np.ndarray]] = None
+        if success:
+            path = self._reconstruct_path(self.parents, len(self.nodes) - 1, self.nodes, self.q_goal)
+            self._last_path = path
+        else:
+            self._advance_obstacles()
+
+        return success, False, path
 
     def _apf_force(self, q: np.ndarray) -> np.ndarray:
         params = self.parameters
@@ -391,14 +445,10 @@ class APFRRTEnv(Env):
         return path
 
     def _run_planning_episode(self) -> PlanResult:
-        self.nodes = [self.q_start.copy()]
-        parents: Dict[int, Optional[int]] = {0: None}
-        self.q_current = self.q_start.copy()
-        self._last_path = None
-
+        self._reset_planning_state()
+        parents: Dict[int, Optional[int]] = self.parents
         collision = False
         success = False
-        path_length = 0.0
         path: Optional[List[np.ndarray]] = None
         start_time = time.perf_counter()
 
@@ -418,10 +468,10 @@ class APFRRTEnv(Env):
 
             self.nodes.append(q_new)
             parents[len(self.nodes) - 1] = idx_near
-            path_length += float(np.linalg.norm(q_new - q_near))
+            self._path_length += float(np.linalg.norm(q_new - q_near))
             self.q_current = q_new
 
-            if is_success(q_new, self.q_goal):
+            if is_success(q_new, self.q_goal, self.scenario.goal_tolerance):
                 success = True
                 path = self._reconstruct_path(parents, len(self.nodes) - 1, self.nodes, self.q_goal)
                 break
@@ -430,7 +480,7 @@ class APFRRTEnv(Env):
 
         planning_time = float(time.perf_counter() - start_time)
         if path is not None:
-            path_length = sum(
+            self._path_length = sum(
                 float(np.linalg.norm(path[i + 1] - path[i])) for i in range(len(path) - 1)
             )
         self._last_path = path
@@ -440,30 +490,38 @@ class APFRRTEnv(Env):
             path=path,
             planning_time=planning_time,
             num_nodes=len(self.nodes),
-            path_length=path_length,
+            path_length=self._path_length,
         )
 
     def _get_state(self) -> np.ndarray:
-        dist = np.linalg.norm(self.q_current - self.q_goal)
-        heading_vector = self.q_goal[:3] - self.q_current[:3]
-        heading = math.atan2(heading_vector[1], heading_vector[0]) / math.pi
-        min_clearance = self._minimum_clearance(self.q_current)
+        dist = float(np.linalg.norm(self.q_current - self.q_goal))
+        min_clearance = float(self._minimum_clearance(self.q_current))
         local_density = sum(
             1
             for obstacle in self.obstacles
             if np.linalg.norm(self.q_current - obstacle.centre) < self.parameters.influence_distance
         )
         density = local_density / max(len(self.obstacles), 1)
-        normalised = np.array(
-            [
-                np.clip(dist / 10.0, 0.0, 1.0),
-                np.clip(heading, -1.0, 1.0),
-                np.clip(min_clearance / 5.0, 0.0, 1.0),
-                np.clip(density, 0.0, 1.0),
-            ],
+
+        max_dist = math.sqrt(self.scenario.n_joints) * abs(self.scenario.joint_max - self.scenario.joint_min)
+        dist_norm = np.clip(dist / max_dist, 0.0, 1.0)
+        progress_norm = np.clip(self._last_progress / (max_dist + 1e-9), -1.0, 1.0)
+        clearance_norm = np.clip(min_clearance / (self.parameters.influence_distance + 1e-9), -1.0, 1.0)
+        density_norm = np.clip(density, -1.0, 1.0)
+
+        param_vec = []
+        for value, bounds in zip(self.parameters.to_array(), self._parameter_bounds()):
+            low, high = bounds
+            scaled = 2.0 * ((value - low) / (high - low + 1e-9)) - 1.0
+            param_vec.append(float(np.clip(scaled, -1.0, 1.0)))
+
+        step_frac = np.clip(self._step_index / self.scenario.max_steps, 0.0, 1.0)
+
+        obs = np.array(
+            [dist_norm, progress_norm, clearance_norm, density_norm, *param_vec, step_frac],
             dtype=np.float32,
         )
-        return np.concatenate([normalised, self.parameters.to_array()])
+        return np.clip(obs, -1.0, 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +787,8 @@ def train_agent(
             var=vec_env.obs_rms.var,
             clip=np.array(vec_env.clip_obs, dtype=np.float32),
             epsilon=np.array(getattr(vec_env, "epsilon", 1e-8), dtype=np.float32),
+            rew_mean=vec_env.ret_rms.mean,
+            rew_var=vec_env.ret_rms.var,
         )
         print(f"Saved observation normalisation statistics to {stats_path}")
 
@@ -783,12 +843,15 @@ def benchmark_agent(
         for episode_idx in range(n_episodes):
             total_episodes += 1
             obs, _ = env.reset()
-            if normalizer is not None:
-                agent_obs = normalizer.normalize(obs)
-            else:
-                agent_obs = obs
-            action, _ = agent.predict(agent_obs, deterministic=True)
-            _, _, _, _, info = env.step(action)
+            for _ in range(env.scenario.max_steps):
+                if normalizer is not None:
+                    agent_obs = normalizer.normalize(obs)
+                else:
+                    agent_obs = obs
+                action, _ = agent.predict(agent_obs)
+                obs, _, done, _, info = env.step(action)
+                if done:
+                    break
 
             if info.get("is_success"):
                 successes += 1
@@ -881,29 +944,35 @@ class RLEnhancedPlanner:
             )
             env.nodes = [q_start.copy()]
             env.parameters = PlannerParameters()
-            env._step_index = 0
+            env._reset_planning_state(obstacles=env.obstacles)
 
             state = env._get_state()
             if self.normalizer is not None:
                 state = self.normalizer.normalize(state)
-            action, _ = self.agent.predict(state, deterministic=True)
-            env.parameters.apply_delta(action)
 
-            result = env._run_planning_episode()
-            plan_time = result.planning_time
+            info: Dict[str, Any] = {}
+            for _ in range(env.scenario.max_steps):
+                action, _ = self.agent.predict(state)
+                state, _, done, _, info = env.step(action)
+                if self.normalizer is not None:
+                    state = self.normalizer.normalize(state)
+                if done:
+                    break
+
+            plan_time = float(info.get("planning_time", 0.0))
             metrics = self._build_metrics(env, env.scenario.max_steps)
             metrics.update(
                 {
                     "restart_attempts": float(attempt + 1),
-                    "success": float(result.success),
-                    "collision": float(result.collision),
-                    "path_length": result.path_length,
-                    "planning_time": result.planning_time,
+                    "success": float(info.get("is_success", False)),
+                    "collision": float(info.get("collision", False)),
+                    "path_length": float(info.get("path_length", 0.0)),
+                    "planning_time": plan_time,
                 }
             )
 
-            if result.path is not None:
-                return result.path, env.nodes, plan_time, metrics
+            if info.get("is_success"):
+                return env._last_path, env.nodes, plan_time, metrics
 
             last_plan_time = plan_time
             last_nodes = env.nodes
