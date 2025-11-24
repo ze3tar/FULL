@@ -244,14 +244,16 @@ class APFRRTEnv(Env):
 
         done = False
         truncated = False
-        info: Dict[str, float] = {}
-        reward = -1.0  # default time penalty to discourage idling
+        info: Dict[str, float] = {"is_success": False}
+        reward = -1.0  # base step cost to discourage idling
         collision_flag = False
         action_magnitude = float(np.linalg.norm(action))
 
+        # Early exit on collision: terminate episode and apply strong penalty.
         if self._in_collision(q_new):
-            reward -= 1000.0
             collision_flag = True
+            done = True
+            reward -= 500.0
         else:
             self.nodes.append(q_new)
             self.q_current = q_new
@@ -259,25 +261,28 @@ class APFRRTEnv(Env):
             old_dist = np.linalg.norm(q_near - self.q_goal)
             new_dist = np.linalg.norm(q_new - self.q_goal)
             progress = old_dist - new_dist
-            reward += 150.0 * progress
 
-            # Explicitly penalise near-stationary behaviour
+            # Reward moving closer to the goal; penalise regressions.
+            reward += 60.0 * progress
             if progress <= 1e-4:
-                reward -= 5.0
+                reward -= 3.0
 
             min_clearance = self._minimum_clearance(q_new)
             reward += 2.0 * math.tanh(max(min_clearance - 0.1, 0.0))
 
-            if new_dist < self.scenario.goal_tolerance:
-                reward += 1000.0
+            # Small shaped bonus for getting within tolerance and terminal bonus when reached.
+            if self._goal_reached(new_dist):
+                proximity_bonus = max(0.0, (self.scenario.goal_tolerance - new_dist))
+                reward += 50.0 * proximity_bonus + 500.0
                 done = True
                 info["is_success"] = True
                 info["reached_goal"] = 1.0
 
-        # Penalise selecting vanishingly small actions even if no collision occurs
+        # Penalise vanishingly small actions regardless of collision outcome.
         if action_magnitude < 1e-3:
             reward -= 2.0
 
+        # Mild regulariser on tree growth to encourage shorter paths.
         reward -= 0.01 * len(self.nodes)
 
         if collision_flag:
@@ -287,7 +292,7 @@ class APFRRTEnv(Env):
             done = True
             truncated = True
             info["timeout"] = 1.0
-            reward -= 1000.0
+            reward -= 50.0
 
         self._advance_obstacles()
 
@@ -377,6 +382,11 @@ class APFRRTEnv(Env):
 
     def _in_collision(self, q: np.ndarray) -> bool:
         return any(np.linalg.norm(q - obstacle.centre) < obstacle.radius for obstacle in self.obstacles)
+
+    def _goal_reached(self, distance: float) -> bool:
+        """Centralise goal reach criterion for consistent training/eval."""
+
+        return distance <= self.scenario.goal_tolerance
 
     def _advance_obstacles(self) -> None:
         if not self._dynamic_active:
@@ -723,7 +733,9 @@ def benchmark_agent(
             done = False
             truncated = False
             episode_collided = False
+            episode_succeeded = False
             step_times: List[float] = []
+            info: Dict[str, float] = {}
 
             while not (done or truncated):
                 action, _ = agent.predict(agent_obs, deterministic=True)
@@ -736,11 +748,12 @@ def benchmark_agent(
                 if info.get("collision", 0.0):
                     episode_collided = True
                 if info.get("is_success"):
+                    episode_succeeded = True
                     print(
                         f"SUCCESS at seed={eval_seed} episode={episode_idx} step={env._step_index}"
                     )
 
-            if info.get("reached_goal", 0.0):
+            if episode_succeeded:
                 successes += 1
             if episode_collided:
                 collision_episodes += 1
