@@ -1,0 +1,211 @@
+*** Begin Patch
+*** Update File: comprehensive_comparison.py
+@@     def _run_rl_apf_rrt(self, start, goal, obstacles, bounds):
+-        # RL planner unavailable -> mark as failure immediately
+-        if not RL_AVAILABLE:
+-            return {
+-                'success': False,
+-                'planning_time': float('nan'),
+-                'nodes_explored': 0,
+-                'path_length': np.nan,
+-                'path': None,
+-                'nodes': [],
+-                'K_att_final': np.nan,
+-                'K_rep_final': np.nan,
+-            }
++        # RL planner unavailable -> mark as failure immediately
++        if not RL_AVAILABLE:
++            return {
++                'success': False,
++                'planning_time': float('nan'),
++                'nodes_explored': 0,
++                'path_length': np.nan,
++                'path': None,
++                'nodes': [],
++                'K_att_final': np.nan,
++                'K_rep_final': np.nan,
++            }
+ 
+-        import math  # local import to avoid circular dependency
+-        from rl_enhanced_apf_rrt import load_agent, ScenarioConfig, RLEnhancedAPF_RRT
++        import math  # local import to avoid circular dependency
++        from rl_enhanced_apf_rrt import load_agent, ScenarioConfig, RLEnhancedAPF_RRT
+ 
+         # Attempt to load a trained agent and observation normaliser.  We try
+         # multiple default filenames (final_model.zip, best_model.zip) under
+         # the ``models`` directory.  If none are found or loading fails
+         # completely, treat this run as a failure.
+@@
+-        for model_path in candidate_models:
+-            try:
+-                if model_path.exists():
+-                    agent, normaliser = load_agent(model_path)
+-                    break
+-            except Exception:
+-                agent = None
+-                normaliser = None
++        for model_path in candidate_models:
++            try:
++                if model_path.exists():
++                    agent, normaliser = load_agent(model_path)
++                    break
++            except Exception:
++                agent = None
++                normaliser = None
+@@
+-        # If the agent failed to load, return failure
+-        if agent is None:
+-            return {
+-                'success': False,
+-                'planning_time': float('nan'),
+-                'nodes_explored': 0,
+-                'path_length': np.nan,
+-                'path': None,
+-                'nodes': [],
+-                'K_att_final': np.nan,
+-                'K_rep_final': np.nan,
+-            }
++        # If the agent failed to load, return failure
++        if agent is None:
++            return {
++                'success': False,
++                'planning_time': float('nan'),
++                'nodes_explored': 0,
++                'path_length': np.nan,
++                'path': None,
++                'nodes': [],
++                'K_att_final': np.nan,
++                'K_rep_final': np.nan,
++            }
+@@
+-        # Convert start and goal coordinates from workspace (0–100) into
+-        # normalised joint space.  The RL environment expects joint values in
+-        # the range [joint_min, joint_max] which defaults to [−π, π].  We map
+-        # 0 → joint_min and 100 → joint_max linearly.  Pad to the required
+-        # number of joints (6) with zeros when necessary.
++        # Convert start and goal coordinates from workspace (0–100) into
++        # normalised joint space.  The RL environment expects joint values in
++        # the range [joint_min, joint_max] which defaults to [−π, π].  We map
++        # 0 → joint_min and 100 → joint_max linearly.  Pad to the required
++        # number of joints (6) with zeros when necessary.
+@@
+-        start_arr = np.asarray(start, dtype=float)
+-        goal_arr = np.asarray(goal, dtype=float)
++        start_arr = np.asarray(start, dtype=float)
++        goal_arr = np.asarray(goal, dtype=float)
+@@
+-        DESIRED_DIM = 6
+-        joint_min = -math.pi
+-        joint_max = math.pi
++        DESIRED_DIM = 6
++        joint_min = -math.pi
++        joint_max = math.pi
+@@
+-        def pad_and_map_to_joint_space(vec: np.ndarray, dim: int = DESIRED_DIM) -> np.ndarray:
+-            """Map a 3D workspace vector (0–100) into joint space and pad to dim."""
+-            # Linear mapping into [joint_min, joint_max]
+-            mapped = (vec / 100.0) * (joint_max - joint_min) + joint_min
+-            # Pad with zeros if needed
+-            if mapped.size < dim:
+-                mapped = np.concatenate([mapped, np.zeros(dim - mapped.size, dtype=float)])
+-            else:
+-                mapped = mapped[:dim]
+-            return mapped
++        def pad_and_map_to_joint_space(vec: np.ndarray, dim: int = DESIRED_DIM) -> np.ndarray:
++            """Map a 3D workspace vector (0–100) into joint space and pad to dim."""
++            # Linear mapping into [joint_min, joint_max]
++            mapped = (vec / 100.0) * (joint_max - joint_min) + joint_min
++            # Pad with zeros if needed
++            if mapped.size < dim:
++                mapped = np.concatenate([mapped, np.zeros(dim - mapped.size, dtype=float)])
++            else:
++                mapped = mapped[:dim]
++            return mapped
+@@
+-        # Map obstacles into joint space.  We linearly map obstacle centres
+-        # into [joint_min, joint_max] and scale radii from workspace units
+-        # (0–100) into the same range by normalising by the workspace size.
++        # Map obstacles into joint space.  We linearly map obstacle centres
++        # into [joint_min, joint_max] and scale radii from workspace units
++        # (0–100) into the same range by normalising by the workspace size.
+@@
+-        # Construct a static scenario matching the joint dimensionality.  We set
+-        # dynamic_probability=0 to disable moving obstacles and leave other
+-        # parameters at their defaults.
++        # Construct a static scenario matching the joint dimensionality.  We set
++        # dynamic_probability=0 to disable moving obstacles and leave other
++        # parameters at their defaults.
+@@
+-        # Instantiate the RL planner with the loaded agent and normaliser
+-        planner = RLEnhancedAPF_RRT(agent=agent, scenario=scenario, normalizer=normaliser)
++        # Instantiate the RL planner with the loaded agent and normaliser
++        planner = RLEnhancedAPF_RRT(agent=agent, scenario=scenario, normalizer=normaliser)
+@@
+-        try:
+-            path, nodes, plan_time, metrics = planner.plan(
+-                q_start, q_goal, q_obstacles, max_iters=8000
+-            )
+-            success = path is not None
+-        except Exception:
+-            # Propagate any exception as a failed trial
+-            return {
+-                'success': False,
+-                'planning_time': float('nan'),
+-                'nodes_explored': 0,
+-                'path_length': np.nan,
+-                'path': None,
+-                'nodes': [],
+-                'K_att_final': np.nan,
+-                'K_rep_final': np.nan,
+-            }
++        try:
++            path, nodes, plan_time, metrics = planner.plan(
++                q_start, q_goal, q_obstacles, max_iters=8000
++            )
++            success = path is not None
++        except Exception:
++            # Propagate any exception as a failed trial
++            return {
++                'success': False,
++                'planning_time': float('nan'),
++                'nodes_explored': 0,
++                'path_length': np.nan,
++                'path': None,
++                'nodes': [],
++                'K_att_final': np.nan,
++                'K_rep_final': np.nan,
++            }
+@@
+-        # Convert the path and nodes back into workspace coordinates (0–100)
+-        # using the inverse of the linear mapping.  Only the first three
+-        # dimensions are used for path length computation and visualisation.
++        # Convert the path and nodes back into workspace coordinates (0–100)
++        # using the inverse of the linear mapping.  Only the first three
++        # dimensions are used for path length computation and visualisation.
+*** End Patch
+ 
+*** Update File: rl_enhanced_apf_rrt.py
+@@ class RLEnhancedPlanner:
+-                if np.linalg.norm(q_new - env.q_goal) < 0.2:
+-                    path = self._reconstruct_path(
+-                        parents, len(env.nodes) - 1, env.nodes, env.q_goal
+-                    )
+-                    plan_time = float(time.perf_counter() - start_time)
+-                    metrics = self._build_metrics(env, iteration + 1)
+-                    metrics["restart_attempts"] = float(attempt + 1)
+-                    return path, env.nodes, plan_time, metrics
++                # Use the scenario's goal_tolerance when checking for success to
++                # ensure consistency with the training environment and
++                # benchmarking.  Previously this threshold was hard-coded to
++                # 0.2, which could diverge from the configured tolerance in
++                # ScenarioConfig.  If the new node is within the tolerance
++                # distance of the goal, reconstruct the path and return.
++                if np.linalg.norm(q_new - env.q_goal) <= env.scenario.goal_tolerance:
++                    path = self._reconstruct_path(
++                        parents, len(env.nodes) - 1, env.nodes, env.q_goal
++                    )
++                    plan_time = float(time.perf_counter() - start_time)
++                    metrics = self._build_metrics(env, iteration + 1)
++                    metrics["restart_attempts"] = float(attempt + 1)
++                    return path, env.nodes, plan_time, metrics
+*** End Patch
