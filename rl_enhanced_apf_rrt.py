@@ -952,39 +952,24 @@ def benchmark_agent(
             dynamic_probability=1.0 if dynamic else 0.0,
         )
         env = APFRRTEnv(scenario, seed=eval_seed)
+        planner = RLEnhancedPlanner(agent=agent, scenario=scenario, normalizer=normalizer)
 
         for episode_idx in range(n_episodes):
             total_episodes += 1
-            obs, _ = env.reset()
-            done = False
-            truncated = False
-            info: Dict[str, float] = {}
-            episode_success = False
+            env.reset()
 
-            while not (done or truncated):
-                if normalizer is not None:
-                    agent_obs = normalizer.normalize(obs)
-                else:
-                    agent_obs = obs
-                action, _ = agent.predict(agent_obs, deterministic=True)
-                obs, _, done, truncated, info = env.step(action)
+            result = planner.plan(env.q_start, env.q_goal, env.obstacles)
+            info: Dict[str, Any] = result
 
-                if info.get("is_success"):
-                    episode_success = True
-                    print(f"SUCCESS at seed={eval_seed} episode={episode_idx}")
-                if info.get("collision"):
-                    collision_episodes += 1
-
-                planning_times.append(float(info.get("planning_time", 0.0)))
-                path_lengths.append(float(info.get("path_length", 0.0)))
-                node_counts.append(float(info.get("num_nodes", 0.0)))
-
-            final_q = env.q_current
-            if env.goal_reached(final_q):
-                episode_success = True
-
-            if episode_success:
+            if info.get("success"):
                 successes += 1
+                print(f"SUCCESS at seed={eval_seed} episode={episode_idx}")
+            if info.get("collision"):
+                collision_episodes += 1
+
+            planning_times.append(float(info.get("planning_time", 0.0)))
+            path_lengths.append(float(info.get("path_length", 0.0)))
+            node_counts.append(float(info.get("num_nodes", 0.0)))
 
     return BenchmarkMetrics(
         success_rate=successes / max(total_episodes, 1),
