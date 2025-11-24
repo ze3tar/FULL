@@ -230,7 +230,8 @@ class PlanningBenchmark:
             path, nodes, plan_time, metrics = planner.plan(
                 q_start, q_goal, q_obstacles, max_iters=8000
             )
-            success = path is not None
+            # Use the planner's unified success flag to stay aligned with training.
+            success = bool(metrics.get('success', False)) if metrics else False
         except ValueError as exc:
             success = False
             plan_time = float('nan')
