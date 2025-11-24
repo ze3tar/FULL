@@ -217,63 +217,145 @@ class PlanningBenchmark:
         }
     
     def _run_rl_apf_rrt(self, start, goal, obstacles, bounds):
-        """Run RL-enhanced APF-RRT"""
+        """Run RL-enhanced APF-RRT benchmark with proper agent loading."""
+
+        # RL planner unavailable -> mark as failure immediately
         if not RL_AVAILABLE:
-            return {'success': False}
+            return {
+                'success': False,
+                'planning_time': float('nan'),
+                'nodes_explored': 0,
+                'path_length': np.nan,
+                'path': None,
+                'nodes': [],
+                'K_att_final': np.nan,
+                'K_rep_final': np.nan,
+            }
 
-        # Convert to numpy arrays and normalize
-        start_arr = np.asarray(start, dtype=float) / 100.0
-        goal_arr  = np.asarray(goal, dtype=float)  / 100.0
+        import math  # local import to avoid circular dependency
+        from rl_enhanced_apf_rrt import load_agent, ScenarioConfig, RLEnhancedAPF_RRT
 
-        # Desired planner dimension
+        # Attempt to load a trained agent and observation normaliser.  We try
+        # multiple default filenames (final_model.zip, best_model.zip) under
+        # the ``models`` directory.  If none are found or loading fails
+        # completely, treat this run as a failure.
+        model_dir = Path('models')
+        candidate_models = [
+            model_dir / 'final_model.zip',
+            model_dir / 'best_model.zip',
+            model_dir / 'best_model' / 'best_model.zip',
+            # Handle accidental double-extension e.g. best_model.zip.zip
+            model_dir / 'best_model.zip.zip',
+        ]
+
+        agent = None
+        normaliser = None
+        for model_path in candidate_models:
+            try:
+                if model_path.exists():
+                    agent, normaliser = load_agent(model_path)
+                    break
+            except Exception:
+                agent = None
+                normaliser = None
+
+        # If the agent failed to load, return failure
+        if agent is None:
+            return {
+                'success': False,
+                'planning_time': float('nan'),
+                'nodes_explored': 0,
+                'path_length': np.nan,
+                'path': None,
+                'nodes': [],
+                'K_att_final': np.nan,
+                'K_rep_final': np.nan,
+            }
+
+        # Convert start and goal coordinates from workspace (0–100) into
+        # normalised joint space.  The RL environment expects joint values in
+        # the range [joint_min, joint_max] which defaults to [−π, π].  We map
+        # 0 → joint_min and 100 → joint_max linearly.  Pad to the required
+        # number of joints (6) with zeros when necessary.
+        start_arr = np.asarray(start, dtype=float)
+        goal_arr = np.asarray(goal, dtype=float)
+
         DESIRED_DIM = 6
+        joint_min = -math.pi
+        joint_max = math.pi
 
-        # Helper to pad or trim vectors
-        def pad_vec(v, dim=DESIRED_DIM):
-            v = np.asarray(v, dtype=float)
-            if v.size < dim:
-                return np.concatenate([v, np.zeros(dim - v.size, dtype=float)])
+        def pad_and_map_to_joint_space(vec: np.ndarray, dim: int = DESIRED_DIM) -> np.ndarray:
+            """Map a 3D workspace vector (0–100) into joint space and pad to dim."""
+
+            # Linear mapping into [joint_min, joint_max]
+            mapped = (vec / 100.0) * (joint_max - joint_min) + joint_min
+            # Pad with zeros if needed
+            if mapped.size < dim:
+                mapped = np.concatenate([mapped, np.zeros(dim - mapped.size, dtype=float)])
             else:
-                return v[:dim]
+                mapped = mapped[:dim]
+            return mapped
 
-        q_start = pad_vec(start_arr, DESIRED_DIM)
-        q_goal  = pad_vec(goal_arr,  DESIRED_DIM)
+        q_start = pad_and_map_to_joint_space(start_arr)
+        q_goal = pad_and_map_to_joint_space(goal_arr)
 
-        # Normalize and pad obstacles
+        # Map obstacles into joint space.  We linearly map obstacle centres
+        # into [joint_min, joint_max] and scale radii from workspace units
+        # (0–100) into the same range by normalising by the workspace size.
         q_obstacles = []
-        for item in obstacles:
-            center = np.asarray(item[0], dtype=float) / 100.0
-            radius = float(item[1]) / 100.0
-            q_obstacles.append((pad_vec(center, DESIRED_DIM), radius))
+        scale = (joint_max - joint_min) / 100.0
+        for centre, radius in obstacles:
+            centre_arr = pad_and_map_to_joint_space(np.asarray(centre, dtype=float))
+            q_obstacles.append((centre_arr, float(radius) * scale))
 
-        # Instantiate planner without requiring a trained agent.  When the agent
-        # is missing the planner raises a clear ValueError which we interpret as
-        # a failed trial (the benchmark should keep running for other planners).
-        planner = RLEnhancedAPF_RRT(agent=None)
+        # Construct a static scenario matching the joint dimensionality.  We set
+        # dynamic_probability=0 to disable moving obstacles and leave other
+        # parameters at their defaults.
+        scenario = ScenarioConfig(
+            n_joints=DESIRED_DIM,
+            joint_min=joint_min,
+            joint_max=joint_max,
+            dynamic_probability=0.0,
+        )
+
+        # Instantiate the RL planner with the loaded agent and normaliser
+        planner = RLEnhancedAPF_RRT(agent=agent, scenario=scenario, normalizer=normaliser)
+
         try:
             path, nodes, plan_time, metrics = planner.plan(
                 q_start, q_goal, q_obstacles, max_iters=8000
             )
-            # Use the planner's unified success flag to stay aligned with training.
-            success = bool(metrics.get('success', False)) if metrics else False
-        except ValueError as exc:
-            success = False
-            plan_time = float('nan')
-            metrics = {}
-            nodes = []
-            path = None
-            _ = exc  # Planner requires an agent; absence is handled as failure.
+            success = path is not None
+        except Exception:
+            # Propagate any exception as a failed trial
+            return {
+                'success': False,
+                'planning_time': float('nan'),
+                'nodes_explored': 0,
+                'path_length': np.nan,
+                'path': None,
+                'nodes': [],
+                'K_att_final': np.nan,
+                'K_rep_final': np.nan,
+            }
 
-        # Convert back to original scale
-        if success and path:
-            path = [np.array(p) * 100.0 for p in path]
-            nodes = [np.array(n) * 100.0 for n in nodes]
+        # Convert the path and nodes back into workspace coordinates (0–100)
+        # using the inverse of the linear mapping.  Only the first three
+        # dimensions are used for path length computation and visualisation.
+        def map_to_workspace(vec: np.ndarray) -> np.ndarray:
+            return ((vec - joint_min) / (joint_max - joint_min)) * 100.0
 
-            final_pos = np.asarray(path[-1]) if path else None
-            success = bool(
-                final_pos is not None
-                and is_success(final_pos, np.asarray(goal), GOAL_TOLERANCE_MM)
-            )
+        if path:
+            path = [map_to_workspace(p)[:3] for p in path]
+        if nodes:
+            nodes = [map_to_workspace(n)[:3] for n in nodes]
+
+        final_pos = np.asarray(path[-1]) if path else None
+        success = bool(
+            success
+            and final_pos is not None
+            and is_success(final_pos, np.asarray(goal), GOAL_TOLERANCE_MM)
+        )
 
         return {
             'success': success,
@@ -282,8 +364,8 @@ class PlanningBenchmark:
             'path_length': path_length(path) if success else np.nan,
             'path': path,
             'nodes': nodes,
-            'K_att_final': metrics.get('K_att_final', np.nan),
-            'K_rep_final': metrics.get('K_rep_final', np.nan)
+            'K_att_final': metrics.get('K_att_final', np.nan) if metrics else np.nan,
+            'K_rep_final': metrics.get('K_rep_final', np.nan) if metrics else np.nan,
         }
 
 
