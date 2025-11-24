@@ -322,10 +322,9 @@ class PlanningBenchmark:
         planner = RLEnhancedAPF_RRT(agent=agent, scenario=scenario, normalizer=normaliser)
 
         try:
-            path, nodes, plan_time, metrics = planner.plan(
+            result = planner.plan(
                 q_start, q_goal, q_obstacles, max_iters=8000
             )
-            success = path is not None
         except Exception:
             # Propagate any exception as a failed trial
             return {
@@ -339,6 +338,12 @@ class PlanningBenchmark:
                 'K_rep_final': np.nan,
             }
 
+        success = bool(result.get('success', False))
+        path = result.get('path', [])
+        nodes = result.get('nodes', [])
+        plan_time = float(result.get('planning_time', float('nan')))
+        metrics = result.get('metrics', {})
+
         # Convert the path and nodes back into workspace coordinates (0–100)
         # using the inverse of the linear mapping.  Only the first three
         # dimensions are used for path length computation and visualisation.
@@ -350,18 +355,11 @@ class PlanningBenchmark:
         if nodes:
             nodes = [map_to_workspace(n)[:3] for n in nodes]
 
-        final_pos = np.asarray(path[-1]) if path else None
-        success = bool(
-            success
-            and final_pos is not None
-            and is_success(final_pos, np.asarray(goal), GOAL_TOLERANCE_MM)
-        )
-
         return {
             'success': success,
             'planning_time': plan_time,
             'nodes_explored': len(nodes),
-            'path_length': path_length(path) if success else np.nan,
+            'path_length': result.get('path_length', path_length(path) if success else np.nan),
             'path': path,
             'nodes': nodes,
             'K_att_final': metrics.get('K_att_final', np.nan) if metrics else np.nan,
