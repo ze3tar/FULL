@@ -48,6 +48,11 @@ class ConfigSpaceAPF_RRT(Env):
         self.action_space = self._env.action_space
         self.observation_space = self._env.observation_space
 
+    def goal_reached(self, q: np.ndarray) -> bool:
+        """Proxy helper to match the unified goal logic used across components."""
+
+        return self._env.goal_reached(q)
+
     # ------------------------------------------------------------------
     # Gymnasium API delegates
     # ------------------------------------------------------------------
