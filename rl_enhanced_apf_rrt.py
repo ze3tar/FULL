@@ -1098,15 +1098,18 @@ class RLEnhancedPlanner:
                 if len(path) < 2:
                     path = [q_start.copy(), q_goal.copy()]
                 assert len(path) > 1, "Successful plans must include at least start and goal"
+                total_path_length = float(self._compute_path_length(path))
+                tree_nodes = list(env.nodes)
+                planning_time = float(plan_time)
                 return {
                     "success": True,
                     "path": path,
-                    "path_length": float(self._compute_path_length(path)),
-                    "num_nodes": len(env.nodes),
-                    "planning_time": plan_time,
+                    "path_length": float(total_path_length),
+                    "num_nodes": float(len(tree_nodes)),
+                    "planning_time": float(planning_time),
                     "collision": result.collision,
                     "metrics": metrics,
-                    "nodes": env.nodes,
+                    "nodes": tree_nodes,
                 }
 
             last_plan_time = plan_time
@@ -1121,16 +1124,20 @@ class RLEnhancedPlanner:
         else:
             fallback_path = [q_start.copy(), q_goal.copy()]
 
+        total_path_length = float(self._compute_path_length(fallback_path))
+        tree_nodes = list(last_nodes) if last_nodes else list(fallback_path)
+        planning_time = float(last_plan_time)
+
         return {
             "success": False,
             "error": "Failed to find path",
             "path": fallback_path,
-            "path_length": float(self._compute_path_length(fallback_path)),
-            "num_nodes": len(last_nodes) if last_nodes else len(fallback_path),
-            "planning_time": last_plan_time,
+            "path_length": float(total_path_length),
+            "num_nodes": float(len(tree_nodes)),
+            "planning_time": float(planning_time),
             "collision": bool(last_metrics.get("collision", False)),
             "metrics": last_metrics,
-            "nodes": last_nodes,
+            "nodes": tree_nodes,
         }
 
     def _compute_path_length(self, path: Sequence[np.ndarray]) -> float:
