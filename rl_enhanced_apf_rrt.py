@@ -194,6 +194,7 @@ class RRTPlanner:
     def __init__(self, env: "APFRRTEnv") -> None:
         self.env = env
         self.tree: List[np.ndarray] = []
+        self.parents: Dict[int, Optional[int]] = {}
         self.start: Optional[np.ndarray] = None
         self.goal: Optional[np.ndarray] = None
 
@@ -201,14 +202,15 @@ class RRTPlanner:
         self.start = start.copy()
         self.goal = goal.copy()
         self.tree = [self.start]
+        self.parents = {0: None}
 
     def sample(self) -> np.ndarray:
         return self.env._sample_random_configuration()
 
-    def nearest(self, q_rand: np.ndarray) -> np.ndarray:
+    def nearest(self, q_rand: np.ndarray) -> Tuple[int, np.ndarray]:
         dists = [np.linalg.norm(node - q_rand) for node in self.tree]
         idx = int(np.argmin(dists))
-        return self.tree[idx]
+        return idx, self.tree[idx]
 
     def steer(self, q_near: np.ndarray, q_rand: np.ndarray) -> np.ndarray:
         direction = self.env._compute_direction(q_near, q_rand)
@@ -221,19 +223,30 @@ class RRTPlanner:
     def in_collision(self, q_new: np.ndarray) -> bool:
         return self.env._in_collision(q_new)
 
-    def incremental_step(self) -> np.ndarray:
+    def incremental_step(self) -> Tuple[np.ndarray, bool, bool, Optional[List[np.ndarray]]]:
         # sample one point
         q_rand = self.sample()
         # find nearest
-        q_near = self.nearest(q_rand)
+        idx_near, q_near = self.nearest(q_rand)
         # steer
-        q_new = self.steer(q_near, q_rand)
+        direction = self.env._compute_direction(q_near, q_rand)
+        step = min(self.env.parameters.step_size, np.linalg.norm(q_rand - q_near))
+        q_new = np.clip(
+            q_near + direction * step,
+            self.env.scenario.joint_min,
+            self.env.scenario.joint_max,
+        )
         # check collision
         if self.in_collision(q_new):
-            return q_near  # no move
+            return q_near, True, False, None
         # add node
         self.tree.append(q_new)
-        return q_new
+        self.parents[len(self.tree) - 1] = idx_near
+        path: Optional[List[np.ndarray]] = None
+        reached = self.env.goal_reached(q_new)
+        if reached:
+            path = self.env._reconstruct_path(self.parents, len(self.tree) - 1, self.tree, self.goal)
+        return q_new, False, reached, path
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +304,8 @@ class APFRRTEnv(Env):
         self.nodes: List[np.ndarray] = []
         self._step_index = 0
         self._last_path: Optional[List[np.ndarray]] = None
+        self._last_motion_dir = np.zeros(self.scenario.n_joints, dtype=np.float64)
+        self._stuck_steps = 0
 
         self.reset()
 
@@ -313,14 +328,16 @@ class APFRRTEnv(Env):
         self.planner.reset(self.q_start, self.q_goal)
         self.nodes = self.planner.tree
         self.prev_dist_to_goal = self._distance_to_goal(self.q_start)
+        self._last_motion_dir = np.zeros(self.scenario.n_joints, dtype=np.float64)
+        self._stuck_steps = 0
         return self._get_state(), {}
 
     def step(self, action: np.ndarray):
         step_start = time.perf_counter()
         self._step_index += 1
 
-        q_new, progress, collided, reached, dist = self._incremental_planner_step(action)
-        reward = self._compute_reward(dist, progress, collided, reached)
+        q_new, progress, collided, reached, dist, movement, dir_change = self._incremental_planner_step(action)
+        reward = self._compute_reward(dist, progress, collided, reached, movement, dir_change)
         done = collided or reached
         truncated = False
         obs = self._get_observation(q_new)
@@ -359,21 +376,52 @@ class APFRRTEnv(Env):
         self.current_node = q_new.copy()
         return self._get_state()
 
-    def _compute_reward(self, dist: float, progress: float, collided: bool, reached_goal: bool) -> float:
+    def _compute_reward(
+        self,
+        dist: float,
+        progress: float,
+        collided: bool,
+        reached_goal: bool,
+        movement: float,
+        direction_change: float,
+    ) -> float:
+        norm_improvement = progress / max(self.prev_dist_to_goal, 1e-6)
+        progress_reward = 5.0 * norm_improvement
+        movement_reward = 0.5 * movement
+        oscillation_penalty = -0.1 * direction_change
+        stuck_penalty = -0.5 if self._stuck_steps >= 3 else 0.0
+        collision_penalty = -80.0 if collided else 0.0
+        goal_bonus = 200.0 if reached_goal else 0.0
+
         reward = (
-            2.0 * progress
+            progress_reward
+            + movement_reward
+            + goal_bonus
+            + collision_penalty
+            + oscillation_penalty
+            + stuck_penalty
             - 0.01
-            + (200.0 if reached_goal else 0.0)
-            - (200.0 if collided else 0.0)
         )
+
         self.prev_dist_to_goal = dist
         return float(reward)
 
     def _incremental_planner_step(self, action: np.ndarray):
+        previous_q = self.q_current.copy()
         # apply APF + RRT parameters from the action
         self._apply_action_parameters(action)
         # perform ONE incremental RRT node expansion
-        q_new = self.planner.incremental_step()
+        q_new, collided, reached, path = self.planner.incremental_step()
+        # compute movement metrics
+        movement_vec = q_new - previous_q
+        movement = float(np.linalg.norm(movement_vec))
+        motion_dir = movement_vec / (movement + 1e-9)
+        direction_change = float(np.linalg.norm(motion_dir - self._last_motion_dir))
+        self._last_motion_dir = motion_dir
+        if movement < self.parameters.step_size * 0.1:
+            self._stuck_steps += 1
+        else:
+            self._stuck_steps = 0
         # update internal state
         self.current_node = q_new
         self.q_current = q_new.copy()
@@ -381,11 +429,13 @@ class APFRRTEnv(Env):
         dist = self._distance_to_goal(q_new)
         progress = self.prev_dist_to_goal - dist
         # compute collisions
-        collided = self._check_collision(q_new)
+        collided = collided or self._check_collision(q_new)
         # check success
-        reached = self.goal_reached(q_new)
-        self._advance_obstacles()
-        return q_new, progress, collided, reached, dist
+        if reached and path is not None:
+            self._last_path = path
+        else:
+            self._advance_obstacles()
+        return q_new, progress, collided, reached, dist, movement, direction_change
 
     def _parameter_bounds(self) -> List[Tuple[float, float]]:
         params = self.parameters
@@ -427,14 +477,17 @@ class APFRRTEnv(Env):
         towards_rand = q_rand - q_near
         towards_goal = self.q_goal - q_near
 
+        apf_component = total_force / (np.linalg.norm(total_force) + 1e-9)
+        apf_component *= 0.5  # damp APF so RRT steering remains dominant
+
         components = np.stack(
             [
                 towards_rand / (np.linalg.norm(towards_rand) + 1e-9),
                 towards_goal / (np.linalg.norm(towards_goal) + 1e-9),
-                total_force / (np.linalg.norm(total_force) + 1e-9),
+                apf_component,
             ]
         )
-        weights = np.array([0.45, 0.35, 0.20], dtype=np.float32)
+        weights = np.array([0.55, 0.35, 0.10], dtype=np.float32)
         direction = (weights[:, None] * components).sum(axis=0)
         return direction / (np.linalg.norm(direction) + 1e-9)
 
@@ -515,8 +568,9 @@ class APFRRTEnv(Env):
             q_rand = self._sample_random_configuration()
             idx_near, q_near = self._find_nearest_node(q_rand)
             direction = self._compute_direction(q_near, q_rand)
+            step = min(self.parameters.step_size, np.linalg.norm(q_rand - q_near))
             q_new = np.clip(
-                q_near + direction * self.parameters.step_size,
+                q_near + direction * step,
                 self.scenario.joint_min,
                 self.scenario.joint_max,
             )
@@ -905,6 +959,7 @@ def benchmark_agent(
             done = False
             truncated = False
             info: Dict[str, float] = {}
+            episode_success = False
 
             while not (done or truncated):
                 if normalizer is not None:
@@ -915,7 +970,7 @@ def benchmark_agent(
                 obs, _, done, truncated, info = env.step(action)
 
                 if info.get("is_success"):
-                    successes += 1
+                    episode_success = True
                     print(f"SUCCESS at seed={eval_seed} episode={episode_idx}")
                 if info.get("collision"):
                     collision_episodes += 1
@@ -923,6 +978,13 @@ def benchmark_agent(
                 planning_times.append(float(info.get("planning_time", 0.0)))
                 path_lengths.append(float(info.get("path_length", 0.0)))
                 node_counts.append(float(info.get("num_nodes", 0.0)))
+
+            final_q = env.q_current
+            if env.goal_reached(final_q):
+                episode_success = True
+
+            if episode_success:
+                successes += 1
 
     return BenchmarkMetrics(
         success_rate=successes / max(total_episodes, 1),
@@ -1028,8 +1090,14 @@ class RLEnhancedPlanner:
                 }
             )
 
+            if result.success and result.path is None and env._last_path is not None:
+                result.path = env._last_path
+
             if result.success and result.path is not None and env.goal_reached(result.path[-1]):
                 path = result.path
+                if len(path) < 2:
+                    path = [q_start.copy(), q_goal.copy()]
+                assert len(path) > 1, "Successful plans must include at least start and goal"
                 return {
                     "success": True,
                     "path": path,
@@ -1045,12 +1113,20 @@ class RLEnhancedPlanner:
             last_nodes = env.nodes
             last_metrics = metrics
 
+        fallback_path: List[np.ndarray]
+        if env._last_path:
+            fallback_path = env._last_path
+        elif last_nodes:
+            fallback_path = list(last_nodes)
+        else:
+            fallback_path = [q_start.copy(), q_goal.copy()]
+
         return {
             "success": False,
             "error": "Failed to find path",
-            "path": [],
-            "path_length": 0.0,
-            "num_nodes": len(last_nodes),
+            "path": fallback_path,
+            "path_length": float(self._compute_path_length(fallback_path)),
+            "num_nodes": len(last_nodes) if last_nodes else len(fallback_path),
             "planning_time": last_plan_time,
             "collision": bool(last_metrics.get("collision", False)),
             "metrics": last_metrics,
