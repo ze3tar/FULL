@@ -781,32 +781,37 @@ def benchmark_agent(
     node_counts: List[float] = []
     total_episodes = 0
 
-    for eval_seed in seeds_to_use:
-        scenario = ScenarioConfig(
-            difficulty=difficulty,
-            dynamic_probability=1.0 if dynamic else 0.0,
-        )
-        env = APFRRTEnv(scenario, seed=eval_seed)
+        for eval_seed in seeds_to_use:
+            scenario = ScenarioConfig(
+                difficulty=difficulty,
+                dynamic_probability=1.0 if dynamic else 0.0,
+            )
+            env = APFRRTEnv(scenario, seed=eval_seed)
 
-        for episode_idx in range(n_episodes):
-            total_episodes += 1
-            obs, _ = env.reset()
-            if normalizer is not None:
-                agent_obs = normalizer.normalize(obs)
-            else:
-                agent_obs = obs
-            action, _ = agent.predict(agent_obs, deterministic=True)
-            _, _, _, _, info = env.step(action)
+            for episode_idx in range(n_episodes):
+                total_episodes += 1
+                obs, _ = env.reset()
+                done = False
+                truncated = False
+                info: Dict[str, float] = {}
 
-            if info.get("is_success"):
-                successes += 1
-                print(f"SUCCESS at seed={eval_seed} episode={episode_idx}")
-            if info.get("collision"):
-                collision_episodes += 1
+                while not (done or truncated):
+                    if normalizer is not None:
+                        agent_obs = normalizer.normalize(obs)
+                    else:
+                        agent_obs = obs
+                    action, _ = agent.predict(agent_obs, deterministic=True)
+                    obs, _, done, truncated, info = env.step(action)
 
-            planning_times.append(float(info.get("planning_time", 0.0)))
-            path_lengths.append(float(info.get("path_length", 0.0)))
-            node_counts.append(float(info.get("num_nodes", 0.0)))
+                if info.get("is_success"):
+                    successes += 1
+                    print(f"SUCCESS at seed={eval_seed} episode={episode_idx}")
+                if info.get("collision"):
+                    collision_episodes += 1
+
+                planning_times.append(float(info.get("planning_time", 0.0)))
+                path_lengths.append(float(info.get("path_length", 0.0)))
+                node_counts.append(float(info.get("num_nodes", 0.0)))
 
     return BenchmarkMetrics(
         success_rate=successes / max(total_episodes, 1),

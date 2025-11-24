@@ -8,6 +8,11 @@ import sys
 import importlib
 import subprocess
 
+import numpy as np
+
+from baseline_enhanced import GOAL_TOLERANCE_MM
+from rl_enhanced_apf_rrt import is_success
+
 def print_header(text):
     print("\n" + "="*70)
     print(f" {text}")
@@ -62,9 +67,13 @@ def test_baseline():
     
     print("  Running baseline APF-RRT (seed=1, 3 scenarios)...")
     result = run_experiment(seed=1, show_plot=False, export_ros=False)
-    
-    success = (result['improved']['path'] is not None and
-              len(result['improved']['nodes']) < 1000)
+
+    improved_path = result['improved']['path']
+    goal = np.asarray(result.get('goal'))
+    success = bool(
+        improved_path
+        and is_success(np.asarray(improved_path[-1]), goal, GOAL_TOLERANCE_MM)
+    )
     
     if success:
         print(f"  ✓ Nodes: {len(result['improved']['nodes'])}")

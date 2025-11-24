@@ -6,9 +6,14 @@ import matplotlib.pyplot as plt
 import os
 import yaml
 
+from rl_enhanced_apf_rrt import DEFAULT_GOAL_TOLERANCE, is_success
+
 # -------------------------
 # Utility functions
 # -------------------------
+GOAL_TOLERANCE_MM = DEFAULT_GOAL_TOLERANCE * 100.0
+
+
 def dist(a, b):
     return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2)
 
@@ -44,8 +49,16 @@ def sample_free(bounds, goal=None, goal_bias=0.0):
 # -------------------------
 # Basic RRT
 # -------------------------
-def rrt_basic(start, goal, obstacles, bounds, max_iters=5000, step_size=20.0, 
-              goal_radius=10.0, goal_bias=0.05):
+def rrt_basic(
+    start,
+    goal,
+    obstacles,
+    bounds,
+    max_iters=5000,
+    step_size=20.0,
+    goal_radius: float = GOAL_TOLERANCE_MM,
+    goal_bias=0.05,
+):
     nodes = [start]
     parents = {0: None}
     start_time = time.time()
@@ -55,18 +68,18 @@ def rrt_basic(start, goal, obstacles, bounds, max_iters=5000, step_size=20.0,
         dists = [dist(n, x_rand) for n in nodes]
         idx = int(np.argmin(dists))
         x_near = nodes[idx]
-        
+
         v = np.array(x_rand) - np.array(x_near)
         L = np.linalg.norm(v)
         if L == 0:
             continue
         step = (v / L) * min(step_size, L)
         x_new = tuple(np.array(x_near) + step)
-        
+
         if not segment_collision_check(x_near, x_new, obstacles):
             nodes.append(x_new)
             parents[len(nodes)-1] = idx
-            if dist(x_new, goal) <= goal_radius:
+            if is_success(np.array(x_new), np.array(goal), goal_radius):
                 path = [goal]
                 cur = len(nodes)-1
                 while cur is not None:
@@ -110,8 +123,19 @@ def compute_apf_force(x_near, goal, obstacles, K_att=1.0, K_rep=0.3, d0=60.0):
 # -------------------------
 # APF-guided RRT
 # -------------------------
-def rrt_apf_guided(start, goal, obstacles, bounds, max_iters=5000, r_step=25.0, 
-                   goal_radius=10.0, goal_bias=0.07, K_att=1.0, K_rep=0.3, d0=80.0):
+def rrt_apf_guided(
+    start,
+    goal,
+    obstacles,
+    bounds,
+    max_iters=5000,
+    r_step=25.0,
+    goal_radius: float = GOAL_TOLERANCE_MM,
+    goal_bias=0.07,
+    K_att=1.0,
+    K_rep=0.3,
+    d0=80.0,
+):
     nodes = [start]
     parents = {0: None}
     start_time = time.time()
@@ -137,19 +161,19 @@ def rrt_apf_guided(start, goal, obstacles, bounds, max_iters=5000, r_step=25.0,
         combined = r1 * v_rand_unit + r2 * nv_goal + r3 * nv_obs
         if np.linalg.norm(combined) == 0:
             combined = nv_goal
-        
+
         rep_mag = np.linalg.norm(F_rep)
         step_adj = r_step * (0.2 + 0.5 * random.random())
         if rep_mag > 0.5:
             step_adj *= 0.5
-        
+
         direction = (combined / np.linalg.norm(combined)) * step_adj
         x_new = tuple(np.array(x_near) + direction)
-        
+
         if not segment_collision_check(x_near, x_new, obstacles):
             nodes.append(x_new)
             parents[len(nodes)-1] = idx
-            if dist(x_new, goal) <= goal_radius:
+            if is_success(np.array(x_new), np.array(goal), goal_radius):
                 path = [goal]
                 cur = len(nodes)-1
                 while cur is not None:
@@ -158,7 +182,7 @@ def rrt_apf_guided(start, goal, obstacles, bounds, max_iters=5000, r_step=25.0,
                 path.reverse()
                 runtime = time.time() - start_time
                 return path, nodes, parents, runtime
-    
+
     runtime = time.time() - start_time
     return None, nodes, parents, runtime
 
@@ -278,9 +302,16 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
         tries += 1
 
     print("Running baseline RRT...")
-    path_b, nodes_b, parents_b, t_b = rrt_basic(start, goal, obstacles, bounds,
-                                                max_iters=8000, step_size=30.0, 
-                                                goal_radius=20.0, goal_bias=0.05)
+    path_b, nodes_b, parents_b, t_b = rrt_basic(
+        start,
+        goal,
+        obstacles,
+        bounds,
+        max_iters=8000,
+        step_size=30.0,
+        goal_radius=GOAL_TOLERANCE_MM,
+        goal_bias=0.05,
+    )
     if path_b is None:
         print("Baseline RRT: FAILED")
     else:
@@ -288,10 +319,19 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
         print(f"Baseline: {len(nodes_b)} nodes, {path_length(path_b):.2f} mm")
 
     print("Running APF-guided RRT...")
-    path_i, nodes_i, parents_i, t_i = rrt_apf_guided(start, goal, obstacles, bounds,
-                                                     max_iters=8000, r_step=35.0, 
-                                                     goal_radius=20.0, goal_bias=0.07,
-                                                     K_att=1.0, K_rep=0.3, d0=100.0)
+    path_i, nodes_i, parents_i, t_i = rrt_apf_guided(
+        start,
+        goal,
+        obstacles,
+        bounds,
+        max_iters=8000,
+        r_step=35.0,
+        goal_radius=GOAL_TOLERANCE_MM,
+        goal_bias=0.07,
+        K_att=1.0,
+        K_rep=0.3,
+        d0=100.0,
+    )
     if path_i is None:
         print("APF-guided RRT: FAILED")
     else:
@@ -385,7 +425,9 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
     return {
         "baseline": {"path": path_b, "nodes": nodes_b, "runtime": t_b},
         "improved": {"path": path_i, "nodes": nodes_i, "runtime": t_i},
-        "obstacles": obstacles
+        "obstacles": obstacles,
+        "start": start,
+        "goal": goal,
     }
 
 # -------------------------

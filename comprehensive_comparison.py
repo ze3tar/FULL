@@ -36,9 +36,15 @@ except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
 
 # Import all planners
 from baseline_enhanced import (
-    rrt_basic, rrt_apf_guided, prune_path, 
-    create_random_spheres, path_length
+    GOAL_TOLERANCE_MM,
+    create_random_spheres,
+    path_length,
+    prune_path,
+    rrt_apf_guided,
+    rrt_basic,
 )
+
+from rl_enhanced_apf_rrt import is_success
 
 try:
     from rl_enhanced_apf_rrt import RLEnhancedAPF_RRT
@@ -155,12 +161,20 @@ class PlanningBenchmark:
         """Run basic RRT"""
         start_time = time.time()
         path, nodes, parents, plan_time = rrt_basic(
-            start, goal, obstacles, bounds,
-            max_iters=8000, step_size=30.0, 
-            goal_radius=20.0, goal_bias=0.05
+            start,
+            goal,
+            obstacles,
+            bounds,
+            max_iters=8000,
+            step_size=30.0,
+            goal_radius=GOAL_TOLERANCE_MM,
+            goal_bias=0.05,
         )
-        
-        success = path is not None
+
+        success = bool(
+            path is not None
+            and is_success(np.asarray(path[-1]), np.asarray(goal), GOAL_TOLERANCE_MM)
+        )
         
         return {
             'success': success,
@@ -175,13 +189,23 @@ class PlanningBenchmark:
         """Run APF-guided RRT"""
         start_time = time.time()
         path, nodes, parents, plan_time = rrt_apf_guided(
-            start, goal, obstacles, bounds,
-            max_iters=8000, r_step=35.0,
-            goal_radius=20.0, goal_bias=0.07,
-            K_att=1.0, K_rep=0.3, d0=100.0
+            start,
+            goal,
+            obstacles,
+            bounds,
+            max_iters=8000,
+            r_step=35.0,
+            goal_radius=GOAL_TOLERANCE_MM,
+            goal_bias=0.07,
+            K_att=1.0,
+            K_rep=0.3,
+            d0=100.0,
         )
-        
-        success = path is not None
+
+        success = bool(
+            path is not None
+            and is_success(np.asarray(path[-1]), np.asarray(goal), GOAL_TOLERANCE_MM)
+        )
         
         return {
             'success': success,
@@ -241,9 +265,15 @@ class PlanningBenchmark:
             _ = exc  # Planner requires an agent; absence is handled as failure.
 
         # Convert back to original scale
-        if success:
+        if success and path:
             path = [np.array(p) * 100.0 for p in path]
             nodes = [np.array(n) * 100.0 for n in nodes]
+
+            final_pos = np.asarray(path[-1]) if path else None
+            success = bool(
+                final_pos is not None
+                and is_success(final_pos, np.asarray(goal), GOAL_TOLERANCE_MM)
+            )
 
         return {
             'success': success,
