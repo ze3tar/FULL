@@ -184,6 +184,59 @@ class PlanResult:
 
 
 # ---------------------------------------------------------------------------
+# Incremental RRT planner
+# ---------------------------------------------------------------------------
+
+
+class RRTPlanner:
+    """Lightweight RRT planner supporting incremental expansion."""
+
+    def __init__(self, env: "APFRRTEnv") -> None:
+        self.env = env
+        self.tree: List[np.ndarray] = []
+        self.start: Optional[np.ndarray] = None
+        self.goal: Optional[np.ndarray] = None
+
+    def reset(self, start: np.ndarray, goal: np.ndarray) -> None:
+        self.start = start.copy()
+        self.goal = goal.copy()
+        self.tree = [self.start]
+
+    def sample(self) -> np.ndarray:
+        return self.env._sample_random_configuration()
+
+    def nearest(self, q_rand: np.ndarray) -> np.ndarray:
+        dists = [np.linalg.norm(node - q_rand) for node in self.tree]
+        idx = int(np.argmin(dists))
+        return self.tree[idx]
+
+    def steer(self, q_near: np.ndarray, q_rand: np.ndarray) -> np.ndarray:
+        direction = self.env._compute_direction(q_near, q_rand)
+        return np.clip(
+            q_near + direction * self.env.parameters.step_size,
+            self.env.scenario.joint_min,
+            self.env.scenario.joint_max,
+        )
+
+    def in_collision(self, q_new: np.ndarray) -> bool:
+        return self.env._in_collision(q_new)
+
+    def incremental_step(self) -> np.ndarray:
+        # sample one point
+        q_rand = self.sample()
+        # find nearest
+        q_near = self.nearest(q_rand)
+        # steer
+        q_new = self.steer(q_near, q_rand)
+        # check collision
+        if self.in_collision(q_new):
+            return q_near  # no move
+        # add node
+        self.tree.append(q_new)
+        return q_new
+
+
+# ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
 
@@ -207,6 +260,7 @@ class APFRRTEnv(Env):
         self.parameters = parameters or PlannerParameters()
         self.rng = np.random.default_rng(seed)
         self.debug = debug
+        self.planner = RRTPlanner(self)
 
         # Observation encodes planner state + tunables so PPO can correlate them
         # with progress: distance, heading, obstacle info, parameter vector.
@@ -229,11 +283,13 @@ class APFRRTEnv(Env):
         self.q_start: np.ndarray = np.zeros(self.scenario.n_joints)
         self.q_goal: np.ndarray = np.zeros(self.scenario.n_joints)
         self.q_current: np.ndarray = np.zeros(self.scenario.n_joints)
+        self.current_node: np.ndarray = np.zeros(self.scenario.n_joints)
         self.obstacles: List[Obstacle] = []
         self._dynamic_active = False
         self.nodes: List[np.ndarray] = []
         self._step_index = 0
         self._last_path: Optional[List[np.ndarray]] = None
+        self._last_distance: float = 0.0
 
         self.reset()
 
@@ -248,45 +304,39 @@ class APFRRTEnv(Env):
         self.q_start = self.scenario.sample_configuration(self.rng)
         self.q_goal = self.scenario.sample_configuration(self.rng)
         self.q_current = self.q_start.copy()
+        self.current_node = self.q_start.copy()
         self.nodes = [self.q_start.copy()]
         self.obstacles = self._generate_obstacles(self.scenario.obstacle_count)
         self._step_index = 0
+        self.planner.reset(self.q_start, self.q_goal)
+        self.nodes = self.planner.tree
+        self._last_distance = float(np.linalg.norm(self.q_start - self.q_goal))
         return self._get_state(), {}
 
     def step(self, action: np.ndarray):
         step_start = time.perf_counter()
         self._step_index += 1
-        self.parameters.apply_delta(action)
 
-        result = self._run_planning_episode()
-
-        reward = 0.0
-        reward -= 0.05 * result.path_length
-        reward -= 0.1 * result.planning_time
-        reward -= 0.01 * result.num_nodes
-        if result.success:
-            reward += 1000.0
-        if result.collision:
-            reward -= 500.0
-
+        q_new, progress, collided, reached = self._incremental_planner_step(action)
+        reward = self._compute_reward(progress, collided, reached)
+        done = collided or reached
+        truncated = False
+        obs = self._get_observation(q_new)
         info: Dict[str, float] = {
-            "is_success": result.success,
-            "collision": result.collision,
-            "path_length": result.path_length,
-            "planning_time": result.planning_time,
-            "num_nodes": float(result.num_nodes),
+            "progress": progress,
+            "collision": collided,
+            "reached_goal": reached,
             "step_ms": float((time.perf_counter() - step_start) * 1_000.0),
             "clearance": float(self._minimum_clearance(self.q_current)),
             "distance_to_goal": float(np.linalg.norm(self.q_current - self.q_goal)),
         }
         if self.debug:
             print(
-                f"[DEBUG] Params: {self.parameters.to_array()} | Success: {result.success} "
-                f"| Collision: {result.collision} | Path length: {result.path_length:.3f} "
-                f"| Planning time: {result.planning_time:.3f}s | Nodes: {result.num_nodes}"
+                f"[DEBUG] Params: {self.parameters.to_array()} | Reached: {reached} "
+                f"| Collision: {collided} | Progress: {progress:.4f} | Nodes: {len(self.nodes)}"
             )
 
-        return self._get_state(), float(reward), True, False, info
+        return obs, float(reward), bool(done), bool(truncated), info
 
     def render(self):  # pragma: no cover - simple debug rendering
         print(
@@ -295,6 +345,49 @@ class APFRRTEnv(Env):
         )
 
     # -- Planning utilities ------------------------------------------------
+    def _apply_action_parameters(self, action: np.ndarray) -> None:
+        self.parameters.apply_delta(action)
+
+    def _compute_progress(self, q_new: np.ndarray) -> float:
+        new_distance = float(np.linalg.norm(q_new - self.q_goal))
+        progress = self._last_distance - new_distance
+        self._last_distance = new_distance
+        return progress
+
+    def _check_collision(self, q_new: np.ndarray) -> bool:
+        return self._in_collision(q_new)
+
+    def _get_observation(self, q_new: np.ndarray) -> np.ndarray:
+        self.q_current = q_new.copy()
+        self.current_node = q_new.copy()
+        return self._get_state()
+
+    def _compute_reward(self, progress: float, collided: bool, reached: bool) -> float:
+        reward = (
+            +2.0 * progress
+            - 50.0 * collided
+            + 200.0 * reached
+            - 0.01
+        )
+        return float(reward)
+
+    def _incremental_planner_step(self, action: np.ndarray):
+        # apply APF + RRT parameters from the action
+        self._apply_action_parameters(action)
+        # perform ONE incremental RRT node expansion
+        q_new = self.planner.incremental_step()
+        # update internal state
+        self.current_node = q_new
+        self.q_current = q_new.copy()
+        # compute distances and progress
+        progress = self._compute_progress(q_new)
+        # compute collisions
+        collided = self._check_collision(q_new)
+        # check success
+        reached = self._goal_reached(q_new)
+        self._advance_obstacles()
+        return q_new, progress, collided, reached
+
     def _parameter_bounds(self) -> List[Tuple[float, float]]:
         params = self.parameters
         return [
@@ -398,8 +491,10 @@ class APFRRTEnv(Env):
 
         return is_success(q, self.q_goal, self.scenario.goal_tolerance)
 
+    # NOTE: only used for evaluation, never for RL training
     def _run_planning_episode(self) -> PlanResult:
-        self.nodes = [self.q_start.copy()]
+        self.planner.reset(self.q_start, self.q_goal)
+        self.nodes = self.planner.tree
         parents: Dict[int, Optional[int]] = {0: None}
         self.q_current = self.q_start.copy()
         self._last_path = None
@@ -769,7 +864,7 @@ def benchmark_agent(
     dynamic: bool = False,
     seed: int = 123,
     seeds: Optional[Sequence[int]] = None,
-    ) -> BenchmarkMetrics:
+) -> BenchmarkMetrics:
     """Evaluate an agent and summarise success / collision metrics."""
 
     seeds_to_use: Sequence[int] = list(seeds) if seeds is not None else [seed]
@@ -781,27 +876,27 @@ def benchmark_agent(
     node_counts: List[float] = []
     total_episodes = 0
 
-        for eval_seed in seeds_to_use:
-            scenario = ScenarioConfig(
-                difficulty=difficulty,
-                dynamic_probability=1.0 if dynamic else 0.0,
-            )
-            env = APFRRTEnv(scenario, seed=eval_seed)
+    for eval_seed in seeds_to_use:
+        scenario = ScenarioConfig(
+            difficulty=difficulty,
+            dynamic_probability=1.0 if dynamic else 0.0,
+        )
+        env = APFRRTEnv(scenario, seed=eval_seed)
 
-            for episode_idx in range(n_episodes):
-                total_episodes += 1
-                obs, _ = env.reset()
-                done = False
-                truncated = False
-                info: Dict[str, float] = {}
+        for episode_idx in range(n_episodes):
+            total_episodes += 1
+            obs, _ = env.reset()
+            done = False
+            truncated = False
+            info: Dict[str, float] = {}
 
-                while not (done or truncated):
-                    if normalizer is not None:
-                        agent_obs = normalizer.normalize(obs)
-                    else:
-                        agent_obs = obs
-                    action, _ = agent.predict(agent_obs, deterministic=True)
-                    obs, _, done, truncated, info = env.step(action)
+            while not (done or truncated):
+                if normalizer is not None:
+                    agent_obs = normalizer.normalize(obs)
+                else:
+                    agent_obs = obs
+                action, _ = agent.predict(agent_obs, deterministic=True)
+                obs, _, done, truncated, info = env.step(action)
 
                 if info.get("is_success"):
                     successes += 1
