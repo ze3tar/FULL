@@ -7,9 +7,10 @@ This converts Cartesian waypoints to joint trajectories for the RM65-6F manipula
 import numpy as np
 import rospy
 import moveit_commander
-from geometry_msgs.msg import Pose, Point
+from geometry_msgs.msg import Pose, Point, PoseStamped
 from moveit_msgs.msg import RobotTrajectory
-from trajectory_msgs.msg import JointTrajectoryPoint
+from nav_msgs.msg import Path
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 class CartesianToMoveItBridge:
     def __init__(self):
@@ -141,6 +142,60 @@ class CartesianToMoveItBridge:
         
         # Display in RViz
         self.group.execute(plan, wait=False)
+
+
+class APFRRT_ROSBridge:
+    """Publish APF-RRT paths to ROS topics and MoveIt."""
+
+    def __init__(self, move_group: str = "manipulator") -> None:
+        moveit_commander.roscpp_initialize([])
+        if not rospy.core.is_initialized():
+            rospy.init_node("apf_rrt_ros_bridge", anonymous=True)
+
+        self.group = moveit_commander.MoveGroupCommander(move_group)
+        self.path_pub = rospy.Publisher("/apf_rrt/path", Path, queue_size=10)
+
+    def publish_path(self, path_points):
+        import rospy as _rospy
+
+        path_msg = Path()
+        path_msg.header.stamp = _rospy.Time.now()
+        path_msg.header.frame_id = "map"
+
+        poses = []
+        for x, y in path_points:
+            pose = PoseStamped()
+            pose.header.frame_id = "map"
+            pose.header.stamp = _rospy.Time.now()
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0
+            poses.append(pose)
+
+        path_msg.poses = poses
+        self.path_pub.publish(path_msg)
+        _rospy.loginfo(f"Published path with {len(poses)} poses to /apf_rrt/path")
+
+    def send_to_moveit(self, path_points):
+        joint_traj = JointTrajectory()
+        joint_traj.joint_names = self.group.get_active_joints()
+
+        base_positions = self.group.get_current_joint_values()
+        for idx, (x, y) in enumerate(path_points):
+            point = JointTrajectoryPoint()
+            positions = list(base_positions)
+            if positions:
+                positions[0] = float(x)
+                if len(positions) > 1:
+                    positions[1] = float(y)
+            point.positions = positions
+            point.time_from_start = rospy.Duration.from_sec(0.5 * (idx + 1))
+            joint_traj.points.append(point)
+
+        robot_traj = RobotTrajectory()
+        robot_traj.joint_trajectory = joint_traj
+        self.group.execute(robot_traj, wait=True)
 
 
 def main():

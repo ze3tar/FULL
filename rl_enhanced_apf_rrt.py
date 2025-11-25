@@ -48,6 +48,8 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
+from path_exporter import export_path
+
 # Matplotlib is an optional dependency; importing lazily keeps the module usable
 # without it (e.g. on headless Colab runtimes before ``pip install matplotlib``).
 try:  # pragma: no cover - optional dependency
@@ -1086,6 +1088,15 @@ class RLEnhancedPlanner:
                 total_path_length = float(self._compute_path_length(path))
                 tree_nodes = list(env.nodes)
                 planning_time = float(plan_time)
+                path_points = [tuple(env.workspace_position(p)[:2]) for p in path]
+                params = metrics.get("final_params")
+                serialisable_params = params.tolist() if hasattr(params, "tolist") else params
+                path_metadata = {
+                    "nodes": float(len(tree_nodes)),
+                    "iterations": float(metrics.get("iterations", len(tree_nodes))),
+                    "planning_time": float(planning_time),
+                    "parameters": serialisable_params,
+                }
                 return {
                     "success": True,
                     "path": path,
@@ -1095,6 +1106,8 @@ class RLEnhancedPlanner:
                     "collision": result.collision,
                     "metrics": metrics,
                     "nodes": tree_nodes,
+                    "path_points": path_points,
+                    "metadata": path_metadata,
                 }
 
             last_plan_time = plan_time
@@ -1112,6 +1125,15 @@ class RLEnhancedPlanner:
         total_path_length = float(self._compute_path_length(fallback_path))
         tree_nodes = list(last_nodes) if last_nodes else list(fallback_path)
         planning_time = float(last_plan_time)
+        path_points = [tuple(env.workspace_position(p)[:2]) for p in fallback_path]
+        params = last_metrics.get("final_params")
+        serialisable_params = params.tolist() if hasattr(params, "tolist") else params
+        path_metadata = {
+            "nodes": float(len(tree_nodes)),
+            "iterations": float(last_metrics.get("iterations", len(tree_nodes))),
+            "planning_time": float(planning_time),
+            "parameters": serialisable_params,
+        }
 
         return {
             "success": False,
@@ -1123,6 +1145,8 @@ class RLEnhancedPlanner:
             "collision": bool(last_metrics.get("collision", False)),
             "metrics": last_metrics,
             "nodes": tree_nodes,
+            "path_points": path_points,
+            "metadata": path_metadata,
         }
 
     def _compute_path_length(self, path: Sequence[np.ndarray]) -> float:
@@ -1297,6 +1321,18 @@ def _parse_args() -> argparse.Namespace:
         default=3,
         help="Number of planner restarts if the initial attempt fails",
     )
+    test_parser.add_argument("--ros-publish", action="store_true", help="Publish nav_msgs/Path to ROS")
+    test_parser.add_argument(
+        "--moveit-execute",
+        action="store_true",
+        help="Execute the planned path through MoveIt",
+    )
+    test_parser.add_argument(
+        "--save-path",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Persist the planned path and metadata to disk",
+    )
 
     benchmark_parser = subparsers.add_parser("benchmark", help="Report success / collision metrics")
     benchmark_parser.add_argument("--model", type=Path, default=Path("./models/best_model.zip"))
@@ -1425,12 +1461,44 @@ def main() -> None:
         path = result.get("path", [])
         nodes = result.get("nodes", [])
         metrics = result.get("metrics", {})
+        path_points = result.get("path_points", [tuple(np.asarray(p)[:2]) for p in path])
+        params = metrics.get("final_params")
+        serialisable_params = params.tolist() if hasattr(params, "tolist") else params
+        metadata = result.get(
+            "metadata",
+            {
+                "nodes": len(nodes),
+                "iterations": metrics.get("iterations", len(nodes)),
+                "planning_time": result.get("planning_time", 0.0),
+                "parameters": serialisable_params,
+            },
+        )
         print("✓ Path found")
         print(f"Iterations: {metrics.get('iterations', len(nodes))}")
         print(f"Nodes: {metrics.get('nodes', len(nodes))}")
         print(f"Planning time: {result.get('planning_time', 0.0):.3f}s")
         print(f"Dynamic scenario: {bool(metrics.get('dynamic', False))}")
         print("Final parameters:", metrics.get("final_params"))
+        if getattr(args, "save_path", True):
+            export_path(path_points, metadata)
+        ros_bridge = None
+        if getattr(args, "ros_publish", False) or getattr(args, "moveit_execute", False):
+            try:
+                from ros_moveit_bridge import APFRRT_ROSBridge
+
+                ros_bridge = APFRRT_ROSBridge()
+            except Exception as exc:  # pragma: no cover - ROS optional
+                print(f"Failed to initialise ROS bridge: {exc}")
+        if ros_bridge and getattr(args, "ros_publish", False):
+            try:
+                ros_bridge.publish_path(path_points)
+            except Exception as exc:  # pragma: no cover - ROS optional
+                print(f"Failed to publish path to ROS: {exc}")
+        if ros_bridge and getattr(args, "moveit_execute", False):
+            try:
+                ros_bridge.send_to_moveit(path_points)
+            except Exception as exc:  # pragma: no cover - ROS optional
+                print(f"Failed to execute path in MoveIt: {exc}")
         if getattr(args, "plot", False):
             plot_3d_path(nodes, path, obstacles, show=True)
 
