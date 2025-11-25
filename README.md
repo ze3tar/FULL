@@ -121,3 +121,62 @@ python rl_enhanced_apf_rrt.py test --plot
 
 Refer to `SUMMARY.md` and `ML_ENHANCEMENT_ARCHITECTURE.md` for a deeper dive
 into the system design and component interactions.
+
+## Installation
+Clone the repository and install the Python dependencies (Python 3.10+ is
+recommended):
+
+```bash
+git clone https://github.com/ze3tar/FULL.git
+cd FULL
+pip install -r requirements.txt
+```
+
+If you plan to run the ROS bridge, ensure ROS Noetic or ROS 2 Humble is
+available in your environment (the scripts only rely on the ROS Python APIs and
+`rosbridge_server`).
+
+## Usage
+- **Smoke test dependencies:**
+  ```bash
+  python quick_test.py
+  ```
+- **Run the deterministic baseline planner and export a path:**
+  ```bash
+  python baseline_enhanced.py --export-path path_points_baseline.csv
+  ```
+- **Benchmark RL-enhanced planner vs. baseline:**
+  ```bash
+  python comprehensive_comparison.py --model models/best_model.zip --plot
+  ```
+- **Smooth an exported path with PSO:**
+  ```bash
+  python pso_path_smoother.py --input path_points_baseline.csv --output smoothed.csv
+  ```
+
+## Linking with ROS via rosbridge
+You can connect the planner outputs to a running ROS graph using
+`rosbridge_server` so that waypoints flow into your MoveIt or RViz workflows.
+
+1. Start rosbridge in your ROS workspace (example for ROS Noetic):
+   ```bash
+   roslaunch rosbridge_server rosbridge_websocket.launch
+   ```
+   Ensure the websocket port (default `9090`) is accessible from the machine
+   running this repository.
+2. Export a path from the planner (baseline or RL-enhanced):
+   ```bash
+   python baseline_enhanced.py --export-path path_points_baseline.csv
+   # or
+   python rl_enhanced_apf_rrt.py test --model models/best_model.zip --export-path path_points_improved.csv
+   ```
+3. Publish the path through the bridge using the included MoveIt helper:
+   ```bash
+   python ros_moveit_bridge.py --path path_points_improved.csv --rosbridge-url ws://localhost:9090
+   ```
+   The bridge script opens a websocket to rosbridge, converts the CSV waypoints
+   into `geometry_msgs/PoseArray`, and publishes to the configured topic for
+   visualization or downstream execution.
+
+For detailed MoveIt configuration notes, see `ROS_INTEGRATION_GUIDE.md` and the
+`apf_rrt_planner.launch` file.
