@@ -146,7 +146,7 @@ def plot_path_3d(path: Sequence[np.ndarray], ax: Axes3D) -> None:
             curvatures[i] = np.linalg.norm(np.cross(v1, v2)) / denom
         curvatures[0] = curvatures[1]
         curvatures[-1] = curvatures[-2]
-    norm_curvature = (curvatures - curvatures.min()) / (curvatures.ptp() + 1e-9)
+    norm_curvature = (curvatures - np.min(curvatures)) / (np.ptp(curvatures) + 1e-9)
 
     lc = Line3DCollection(
         segments,
