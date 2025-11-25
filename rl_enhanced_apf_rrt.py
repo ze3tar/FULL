@@ -183,6 +183,7 @@ class PlanResult:
     planning_time: float
     num_nodes: int
     path_length: float
+    parents: Optional[Dict[int, Optional[int]]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +307,7 @@ class APFRRTEnv(Env):
         self.nodes: List[np.ndarray] = []
         self._step_index = 0
         self._last_path: Optional[List[np.ndarray]] = None
+        self._last_parents: Optional[Dict[int, Optional[int]]] = None
         self._last_motion_dir = np.zeros(self.scenario.n_joints, dtype=np.float64)
         self._stuck_steps = 0
 
@@ -329,6 +331,7 @@ class APFRRTEnv(Env):
         self._step_index = 0
         self.planner.reset(self.q_start, self.q_goal)
         self.nodes = self.planner.tree
+        self._last_parents = None
         self.prev_dist_to_goal = self._distance_to_goal(self.q_start)
         self._last_motion_dir = np.zeros(self.scenario.n_joints, dtype=np.float64)
         self._stuck_steps = 0
@@ -558,6 +561,7 @@ class APFRRTEnv(Env):
         parents: Dict[int, Optional[int]] = {0: None}
         self.q_current = self.q_start.copy()
         self._last_path = None
+        self._last_parents = parents
         self.goal_position = self.workspace_position(self.q_goal)
 
         collision = False
@@ -616,6 +620,7 @@ class APFRRTEnv(Env):
             planning_time=planning_time,
             num_nodes=len(self.nodes),
             path_length=path_length,
+            parents=parents,
         )
 
     def _get_state(self) -> np.ndarray:
@@ -1082,6 +1087,7 @@ class RLEnhancedPlanner:
 
             if result.success and result.path is not None and env.goal_reached(result.path[-1]):
                 path = result.path
+                parents = result.parents or env._last_parents or {0: None}
                 if len(path) < 2:
                     path = [q_start.copy(), q_goal.copy()]
                 assert len(path) > 1, "Successful plans must include at least start and goal"
@@ -1106,6 +1112,7 @@ class RLEnhancedPlanner:
                     "collision": result.collision,
                     "metrics": metrics,
                     "nodes": tree_nodes,
+                    "parents": parents,
                     "path_points": path_points,
                     "metadata": path_metadata,
                 }
@@ -1145,6 +1152,7 @@ class RLEnhancedPlanner:
             "collision": bool(last_metrics.get("collision", False)),
             "metrics": last_metrics,
             "nodes": tree_nodes,
+            "parents": env._last_parents or {0: None},
             "path_points": path_points,
             "metadata": path_metadata,
         }
@@ -1214,49 +1222,80 @@ def plot_3d_path(
     nodes: Sequence[np.ndarray],
     path: Optional[Sequence[np.ndarray]] = None,
     obstacles: Optional[Sequence[Obstacle]] = None,
+    parents: Optional[Dict[int, Optional[int]]] = None,
+    *,
+    show_tree: bool = True,
+    show_obstacles: bool = True,
+    show_apf: bool = False,
+    apf_fn: Optional[Any] = None,
+    apf_domain: Optional[Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]] = None,
+    use_contours: bool = False,
     show: bool = True,
     save_path: Optional[Path] = None,
+    elevation: Optional[float] = None,
+    azimuth: Optional[float] = None,
 ) -> None:
-    """Visualise the exploration tree and final path in 3D."""
+    """Visualise the exploration tree and final path in 3D with publication styling."""
 
     if plt is None:
         raise ImportError("matplotlib is required for 3D visualisation")
 
-    fig = plt.figure(figsize=(8, 6))
+    from visualization_3d import plot_apf_field_3d, plot_obstacles_3d, plot_path_3d, plot_rrt_tree_3d
+
+    fig = plt.figure(figsize=(9, 7))
     ax = fig.add_subplot(111, projection="3d")
 
-    if nodes:
-        coords = np.array(nodes)
-        ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], s=8, alpha=0.3, label="Tree")
+    if show_tree and nodes and parents:
+        plot_rrt_tree_3d(nodes, parents, ax)
+    elif show_tree and nodes:
+        plot_rrt_tree_3d(nodes, {idx: idx - 1 for idx in range(len(nodes))}, ax)
+
+    if obstacles and show_obstacles:
+        plot_obstacles_3d(obstacles, ax)
 
     if path:
-        path_arr = np.array(path)
-        ax.plot(path_arr[:, 0], path_arr[:, 1], path_arr[:, 2], "r-", linewidth=2, label="Path")
+        plot_path_3d(path, ax)
 
-    if obstacles:
-        for obstacle in obstacles:
-            if isinstance(obstacle, ObstacleState):
-                centre = obstacle.centre
-                radius = obstacle.radius
-            else:
-                centre, radius = obstacle
-            u, v = np.mgrid[0 : 2 * np.pi : 12j, 0 : np.pi : 6j]
-            x = centre[0] + radius * np.cos(u) * np.sin(v)
-            y = centre[1] + radius * np.sin(u) * np.sin(v)
-            z = centre[2] + radius * np.cos(v)
-            ax.plot_surface(x, y, z, color="grey", alpha=0.2)
+    if nodes:
+        coords = np.asarray(nodes)
+        mins = coords[:, :3].min(axis=0)
+        maxs = coords[:, :3].max(axis=0)
+        span = np.maximum(maxs - mins, 1e-3)
+        padding = span * 0.2
+        ax.set_xlim(mins[0] - padding[0], maxs[0] + padding[0])
+        ax.set_ylim(mins[1] - padding[1], maxs[1] + padding[1])
+        ax.set_zlim(mins[2] - padding[2], maxs[2] + padding[2])
+
+    if show_apf and apf_fn and apf_domain:
+        plot_apf_field_3d(apf_fn, apf_domain, ax, use_contours=use_contours)
+
+    if nodes:
+        start = np.asarray(nodes[0])[:3]
+        ax.scatter(*start, s=120, c="green", depthshade=True, label="Start")
+    if path:
+        goal = np.asarray(path[-1])[:3]
+        ax.scatter(*goal, s=140, c="gold", depthshade=True, label="Goal")
 
     ax.set_title("APF-RRT exploration (first 3 joints)")
     ax.set_xlabel("Joint 1")
     ax.set_ylabel("Joint 2")
     ax.set_zlabel("Joint 3")
-    ax.legend(loc="upper right")
-    ax.grid(True)
+    ax.legend(loc="upper right", frameon=False)
+    ax.set_facecolor("white")
+    for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
+        axis.pane.set_facecolor((1, 1, 1, 0))
+        axis.pane.set_edgecolor((1, 1, 1, 0))
+    ax.grid(False)
+    if elevation is not None:
+        ax.view_init(elev=elevation, azim=ax.azim if azimuth is None else azimuth)
+    if azimuth is not None and elevation is None:
+        ax.view_init(elev=ax.elev, azim=azimuth)
 
     if save_path is not None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=200)
+        fig.savefig(save_path.with_suffix(".png"), dpi=300, bbox_inches="tight")
+        fig.savefig(save_path.with_suffix(".pdf"), dpi=300, bbox_inches="tight")
     if show:
         plt.show()
     else:
@@ -1314,7 +1353,36 @@ def _parse_args() -> argparse.Namespace:
     test_parser.add_argument("--model", type=Path, default=Path("./models/best_model.zip"))
     test_parser.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
     test_parser.add_argument("--dynamic", action="store_true", help="Use dynamic obstacle scenarios")
-    test_parser.add_argument("--plot", action="store_true", help="Show 3D visualisation")
+    test_parser.add_argument("--plot", action="store_true", help="Show legacy 3D visualisation (alias for --plot-3d)")
+    test_parser.add_argument("--plot-3d", action="store_true", help="Show publication-style 3D visualisation")
+    test_parser.add_argument(
+        "--show-tree",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Render the RRT tree (can be slow for large trees)",
+    )
+    test_parser.add_argument(
+        "--show-obstacles",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Render 3D obstacle extrusions",
+    )
+    test_parser.add_argument(
+        "--show-apf",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Visualise APF gradients as 3D arrows/contours",
+    )
+    test_parser.add_argument(
+        "--save-fig",
+        type=Path,
+        nargs="?",
+        const=Path("apf_rrt_figure"),
+        default=None,
+        help="Save the 3D visualisation as high-DPI PNG and PDF",
+    )
+    test_parser.add_argument("--elevation", type=float, default=None, help="Camera elevation for the 3D view")
+    test_parser.add_argument("--azimuth", type=float, default=None, help="Camera azimuth for the 3D view")
     test_parser.add_argument(
         "--restarts",
         type=int,
@@ -1499,8 +1567,69 @@ def main() -> None:
                 ros_bridge.send_to_moveit(path_points)
             except Exception as exc:  # pragma: no cover - ROS optional
                 print(f"Failed to execute path in MoveIt: {exc}")
-        if getattr(args, "plot", False):
-            plot_3d_path(nodes, path, obstacles, show=True)
+        plot_requested = bool(getattr(args, "plot_3d", False) or getattr(args, "plot", False))
+        if plot_requested:
+            final_params = metrics.get("final_params")
+            params_array = np.asarray(final_params) if final_params is not None else None
+            params = PlannerParameters()
+            if params_array is not None and params_array.shape[0] >= 5:
+                (
+                    params.attractive_gain,
+                    params.repulsive_gain,
+                    params.influence_distance,
+                    params.step_size,
+                    params.goal_bias,
+                ) = params_array[:5]
+
+            def _apf_field(sample: np.ndarray) -> np.ndarray:
+                q_full = np.zeros_like(q_goal, dtype=np.float64)
+                q_full[:3] = sample[:3]
+                if q_full.shape[0] > q_goal.shape[0]:
+                    q_full = q_full[: q_goal.shape[0]]
+                v_att = q_goal - q_full
+                d_att = np.linalg.norm(v_att)
+                f_att = params.attractive_gain * (v_att / (d_att + 1e-9)) if d_att > 0 else np.zeros_like(q_full)
+                f_rep = np.zeros_like(q_full)
+                for obstacle in obstacles:
+                    centre = obstacle.centre if hasattr(obstacle, "centre") else np.asarray(obstacle[0])
+                    radius = obstacle.radius if hasattr(obstacle, "radius") else float(obstacle[1])
+                    diff = q_full - centre
+                    dist = np.linalg.norm(diff) - radius
+                    if 0.0 < dist <= params.influence_distance:
+                        magnitude = params.repulsive_gain * (
+                            (1.0 / dist**2) * (1.0 / dist - 1.0 / params.influence_distance)
+                        )
+                        f_rep += magnitude * (diff / (np.linalg.norm(diff) + 1e-9))
+                return (f_att + f_rep)[:3]
+
+            coords = np.asarray(nodes) if nodes else np.asarray(path)
+            if coords.size == 0:
+                coords = np.zeros((1, 3))
+            coords3 = coords[:, :3]
+            mins = coords3.min(axis=0)
+            maxs = coords3.max(axis=0)
+            span = np.maximum(maxs - mins, 1e-3)
+            padding = span * 0.3
+            domain = tuple(
+                (float(mins[i] - padding[i]), float(maxs[i] + padding[i])) for i in range(3)
+            )
+
+            plot_3d_path(
+                nodes,
+                path,
+                obstacles,
+                parents=result.get("parents"),
+                show_tree=bool(getattr(args, "show_tree", False)),
+                show_obstacles=bool(getattr(args, "show_obstacles", True)),
+                show_apf=bool(getattr(args, "show_apf", False)),
+                apf_fn=_apf_field,
+                apf_domain=domain,  # type: ignore[arg-type]
+                use_contours=True,
+                show=True,
+                save_path=getattr(args, "save_fig", None),
+                elevation=getattr(args, "elevation", None),
+                azimuth=getattr(args, "azimuth", None),
+            )
 
 
 if __name__ == "__main__":
