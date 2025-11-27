@@ -42,9 +42,11 @@ class ConfigSpaceAPF_RRT(Env):
 
     metadata = APFRRTEnv.metadata
 
-    def __init__(self, settings: Optional[ConfigSpaceSettings] = None) -> None:
+    def __init__(
+        self, settings: Optional[ConfigSpaceSettings] = None, dynamic_manager=None
+    ) -> None:
         self.settings = settings or ConfigSpaceSettings()
-        self._env = APFRRTEnv(self.settings.to_scenario(), seed=self.settings.seed)
+        self._env = APFRRTEnv(self.settings.to_scenario(), seed=self.settings.seed, dynamic_manager=dynamic_manager)
         self.action_space = self._env.action_space
         self.observation_space = self._env.observation_space
 
