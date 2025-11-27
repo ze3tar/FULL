@@ -1,0 +1,29 @@
+[
+  {
+    "name": "baseline",
+    "original_length": 748.6460448124684,
+    "smoothed_length": 1110.80501975611,
+    "original_smoothness": 18.10147788989915,
+    "smoothed_smoothness": 68.67335506958511,
+    "original_curvature": 1.5707963267948966,
+    "smoothed_curvature": 2.8366403731070946
+  },
+  {
+    "name": "improved",
+    "original_length": 845.0635002206554,
+    "smoothed_length": 1202.4522949735135,
+    "original_smoothness": 33.95998294921312,
+    "smoothed_smoothness": 124.0831512066415,
+    "original_curvature": 2.2807939969140856,
+    "smoothed_curvature": 2.6555574818498506
+  },
+  {
+    "name": "synthetic",
+    "original_length": 623.6144720470811,
+    "smoothed_length": 622.1360042186163,
+    "original_smoothness": 0.8119534064511137,
+    "smoothed_smoothness": 0.9828553027071859,
+    "original_curvature": 0.22594587604733027,
+    "smoothed_curvature": 0.3226980685906702
+  }
+]
