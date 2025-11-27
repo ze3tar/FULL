@@ -11,7 +11,9 @@ full architecture notes.
 | Baseline planners | Deterministic RRT family reproduction with APF guidance | `baseline_enhanced.py` |
 | RL enhancements | PPO-based parameter tuning + evaluation helpers | `rl_enhanced_apf_rrt.py`, `config_space_apf_rrt.py` |
 | Obstacle intelligence | LSTM-based obstacle forecasting and runtime manager | `obstacle_predictor.py` |
+| Dynamic simulation | Real-time obstacle generator + broadcaster | `dynamic_environment_simulator.py` |
 | Path optimisation | PSO smoother for post-processing | `pso_path_smoother.py` |
+| Real-time replanning | Collision-aware replanning loop with ROS hooks | `realtime_replanner.py` |
 | Tooling & integration | Benchmark harness, ROS bridge, launch files | `comprehensive_comparison.py`, `ros_moveit_bridge.py`, `apf_rrt_planner.launch` |
 
 ## Complete Implementation Roadmap
@@ -29,6 +31,7 @@ full architecture notes.
 
 ### Level 3 – Integration
 - ROS/MoveIt execution + RViz visualisation → `ros_moveit_bridge.py`, `apf_rrt_planner.launch`
+- Dynamic simulator + prediction-driven replanning → `dynamic_environment_simulator.py`, `realtime_replanner.py`
 
 ### Timeline Milestones
 1. **Foundation (ROS Integration)**
@@ -41,6 +44,12 @@ full architecture notes.
    - Tune PSO, integrate into pipeline, validate 15–20% path cost reduction.
 5. **Dynamic Integration**
    - Assemble dynamic simulator and real-time replanner, deliver ROS/MoveIt + RViz demos.
+   - Maintain benchmark tables (success rate, latency, node count, smoothness) for static vs. dynamic scenes.
+
+## Benchmark Deliverables
+- Final benchmark tables comparing static vs. dynamic scenes, including success rate, planning time, explored nodes, and path smoothness.
+- RViz/MoveIt walkthrough recording for the closed-loop replanner (attach video link in project wiki).
+- ROS integration quick-start updated in `ROS_INTEGRATION_GUIDE.md`.
 
 ## Benchmark-at-a-Glance (3D Metrics)
 

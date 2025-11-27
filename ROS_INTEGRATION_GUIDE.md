@@ -40,15 +40,22 @@ Outputs of interest:
    - Parses YAML waypoints into `moveit_msgs/RobotTrajectory`
    - Publishes visualization markers for obstacles and path
    - Optionally accepts live updates from the RL planner (see next section)
+3. To stream a live replanned path, call `RealTimeReplanner.publish_path_to_rviz` (from `realtime_replanner.py`) with the
+   smoothed path; RViz will display it on `/replanner/path`.
 
 ## 4. Integrating the RL Planner
 Use the CLI to execute the PPO-enhanced planner and stream results to ROS:
 ```bash
 python3 rl_enhanced_apf_rrt.py test --model models/best_model.zip --plot
 ```
-- To run continuous replanning with dynamic obstacles, extend the bridge to
-  subscribe to predictions from `DynamicObstacleManager` and publish updated
-  trajectories via `/move_group/goal`.
+- To run continuous replanning with dynamic obstacles, feed predicted obstacles
+  into `RealTimeReplanner.update_predictions`, then invoke
+  `evaluate_and_replan(current_pose, reference_path, goal)` each cycle. Any
+  replanned `smooth_path` can be published to RViz or converted to a MoveIt
+  `RobotTrajectory` via `ros_moveit_bridge.py`.
+- `DynamicEnvironmentSimulator` can be used in simulation to publish obstacles
+  at a fixed rate; subscribe to its callbacks and sync them into the MoveIt
+  planning scene using `RealTimeReplanner.sync_planning_scene`.
 
 ## 5. Validation Checklist
 - [ ] RViz shows the planned path (blue) and original nodes (grey scatter)
