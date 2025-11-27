@@ -30,7 +30,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -258,6 +258,9 @@ class RRTPlanner:
 
 Obstacle = ObstacleState
 
+if TYPE_CHECKING:  # pragma: no cover - optional dependency
+    from obstacle_predictor import DynamicObstacleManager
+
 
 class APFRRTEnv(Env):
     """Gymnasium environment exposing APF-RRT planning dynamics."""
@@ -270,6 +273,7 @@ class APFRRTEnv(Env):
         parameters: Optional[PlannerParameters] = None,
         seed: Optional[int] = None,
         debug: bool = False,
+        dynamic_manager: Optional["DynamicObstacleManager"] = None,
     ) -> None:
         super().__init__()
         self.scenario = scenario
@@ -278,6 +282,7 @@ class APFRRTEnv(Env):
         self.debug = debug
         self.planner = RRTPlanner(self)
         self.prev_dist_to_goal: float = 0.0
+        self.dynamic_manager = dynamic_manager
 
         # Observation encodes planner state + tunables so PPO can correlate them
         # with progress: distance, heading, obstacle info, parameter vector.
@@ -303,6 +308,7 @@ class APFRRTEnv(Env):
         self.current_node: np.ndarray = np.zeros(self.scenario.n_joints)
         self.goal_position: np.ndarray = np.zeros(3, dtype=np.float64)
         self.obstacles: List[Obstacle] = []
+        self._obstacle_ids: List[str] = []
         self._dynamic_active = False
         self.nodes: List[np.ndarray] = []
         self._step_index = 0
@@ -328,6 +334,10 @@ class APFRRTEnv(Env):
         self.goal_position = self.workspace_position(self.q_goal)
         self.nodes = [self.q_start.copy()]
         self.obstacles = self._generate_obstacles(self.scenario.obstacle_count)
+        self._obstacle_ids = [f"obs_{idx}" for idx in range(len(self.obstacles))]
+        if self.dynamic_manager:
+            self.dynamic_manager.reset()
+            self._record_obstacles(timestamp=0.0)
         self._step_index = 0
         self.planner.reset(self.q_start, self.q_goal)
         self.nodes = self.planner.tree
@@ -467,6 +477,28 @@ class APFRRTEnv(Env):
             obstacles.append(ObstacleState(centre, radius, velocity))
         return obstacles
 
+    def _record_obstacles(self, timestamp: float) -> None:
+        """Update the dynamic manager with current obstacle state."""
+
+        if self.dynamic_manager is None:
+            return
+
+        for obs_id, obstacle in zip(self._obstacle_ids, self.obstacles):
+            self.dynamic_manager.update_obstacle(obs_id, obstacle.centre, obstacle.velocity, timestamp)
+
+    def _effective_obstacles(self, step: int = 1) -> List[Tuple[np.ndarray, float]]:
+        """Return obstacle centres optionally replaced by predicted futures."""
+
+        if self.dynamic_manager is None:
+            return [(obstacle.centre, obstacle.radius) for obstacle in self.obstacles]
+
+        predicted_positions = self.dynamic_manager.get_all_predicted_positions(step)
+        effective: List[Tuple[np.ndarray, float]] = []
+        for obs_id, obstacle in zip(self._obstacle_ids, self.obstacles):
+            centre = predicted_positions.get(obs_id, obstacle.centre)
+            effective.append((centre, obstacle.radius))
+        return effective
+
     def _sample_random_configuration(self) -> np.ndarray:
         if self.rng.random() < self.parameters.goal_bias:
             return self.q_goal
@@ -503,20 +535,20 @@ class APFRRTEnv(Env):
         f_att = params.attractive_gain * (v_att / (d_att + 1e-9)) if d_att > 0 else np.zeros_like(q)
 
         f_rep = np.zeros_like(q)
-        for obstacle in self.obstacles:
-            diff = q - obstacle.centre
-            dist = np.linalg.norm(diff) - obstacle.radius
+        for centre, radius in self._effective_obstacles(step=1):
+            diff = q - centre
+            dist = np.linalg.norm(diff) - radius
             if 0.0 < dist <= params.influence_distance:
                 magnitude = params.repulsive_gain * ((1.0 / dist**2) * (1.0 / dist - 1.0 / params.influence_distance))
                 f_rep += magnitude * (diff / (np.linalg.norm(diff) + 1e-9))
         return f_att + f_rep
 
     def _minimum_clearance(self, q: np.ndarray) -> float:
-        distances = [np.linalg.norm(q - obstacle.centre) - obstacle.radius for obstacle in self.obstacles]
+        distances = [np.linalg.norm(q - centre) - radius for centre, radius in self._effective_obstacles()]
         return min(distances) if distances else 10.0
 
     def _in_collision(self, q: np.ndarray) -> bool:
-        return any(np.linalg.norm(q - obstacle.centre) < obstacle.radius for obstacle in self.obstacles)
+        return any(np.linalg.norm(q - centre) < radius for centre, radius in self._effective_obstacles())
 
     def _advance_obstacles(self) -> None:
         if not self._dynamic_active:
@@ -527,6 +559,7 @@ class APFRRTEnv(Env):
                 self.scenario.joint_max,
                 self.scenario.dynamic_time_step,
             )
+        self._record_obstacles(timestamp=float(self._step_index * self.scenario.dynamic_time_step))
 
     def _reconstruct_path(
         self,
