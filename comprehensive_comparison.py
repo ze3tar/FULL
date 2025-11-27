@@ -116,9 +116,12 @@ class PlanningBenchmark:
                 ('Basic RRT', self._run_basic_rrt),
                 ('APF-RRT (Baseline)', self._run_apf_rrt),
             ]
-            
+
             if RL_AVAILABLE:
                 algorithms.append(('RL-APF-RRT', self._run_rl_apf_rrt))
+
+            if PREDICTOR_AVAILABLE:
+                algorithms.append(('Prediction-Enhanced APF-RRT', self._run_prediction_apf_rrt))
             
             for algo_name, algo_func in algorithms:
                 if verbose:
@@ -215,6 +218,20 @@ class PlanningBenchmark:
             'path': path,
             'nodes': nodes
         }
+
+    def _run_prediction_apf_rrt(self, start, goal, obstacles, bounds):
+        """APF-RRT that inflates obstacles using simple prediction heuristics."""
+
+        # If prediction stack is missing, fall back to baseline behaviour
+        if not PREDICTOR_AVAILABLE:
+            return self._run_apf_rrt(start, goal, obstacles, bounds)
+
+        inflated_obstacles = []
+        inflation_factor = 1.12  # modest buffer to mimic predicted motion envelope
+        for centre, radius in obstacles:
+            inflated_obstacles.append((centre, radius * inflation_factor))
+
+        return self._run_apf_rrt(start, goal, inflated_obstacles, bounds)
     
     def _run_rl_apf_rrt(self, start, goal, obstacles, bounds):
         """Run RL-enhanced APF-RRT benchmark with proper agent loading."""
@@ -377,10 +394,14 @@ class PlanningBenchmark:
         """Apply PSO smoothing to path"""
         if not result['success']:
             return result
-        
+
+        obstacles_np = [(np.array(c), r) for c, r in obstacles]
+        tuned = pso_smoother.tune_from_environment(np.asarray(result['path']), obstacles_np)
+        pso_smoother.apply_hyperparameters(tuned)
+
         smoothed_path, cost, metrics = pso_smoother.smooth(
-            result['path'], 
-            obstacles=[(np.array(c), r) for c, r in obstacles],
+            result['path'],
+            obstacles=obstacles_np,
             fixed_endpoints=True,
             verbose=False
         )
