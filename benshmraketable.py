@@ -29,6 +29,8 @@ except ImportError as e:  # pragma: no cover - import guard
 
 
 def parse_args() -> argparse.Namespace:
+    base_dir = Path(__file__).resolve().parent
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--trials",
@@ -38,13 +40,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-path",
-        default="/mnt/user-data/uploads/best_model_zip.zip",
-        help="Path to PPO policy zip (default: /mnt/user-data/uploads/best_model_zip.zip)",
+        default=str(base_dir / "models/final_model.zip"),
+        help="Path to PPO policy zip (default: models/final_model.zip relative to script)",
     )
     parser.add_argument(
         "--normalizer-path",
-        default="/mnt/user-data/uploads/obs_normalizer.npz",
-        help="Path to observation normalizer (default: /mnt/user-data/uploads/obs_normalizer.npz)",
+        default=str(base_dir / "models/obs_normalizer.npz"),
+        help="Path to observation normalizer (default: models/obs_normalizer.npz relative to script)",
     )
     parser.add_argument(
         "--output-dir",
