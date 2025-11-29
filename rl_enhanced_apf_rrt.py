@@ -219,6 +219,19 @@ class PlanResult:
     parents: Optional[Dict[int, Optional[int]]] = None
 
 
+@dataclass
+class PlannerResult:
+    """Structured result for benchmarking and CLI output."""
+
+    success: bool
+    path: List[np.ndarray]
+    planning_time: float
+    num_nodes: int
+    path_length: float
+    params: List[float]
+    collision: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Incremental RRT planner
 # ---------------------------------------------------------------------------
@@ -1264,6 +1277,90 @@ class RLEnhancedPlanner:
         if centre_arr.shape[0] != n_joints:
             raise ValueError("Obstacle dimension mismatch with scenario joints")
         return ObstacleState(centre_arr, float(radius), np.zeros(n_joints, dtype=np.float32))
+
+
+def _adjust_dimensionality(vec: np.ndarray, target_dim: int) -> np.ndarray:
+    """Pad or truncate a configuration vector to match the scenario dimension."""
+
+    vec = np.asarray(vec, dtype=np.float64).ravel()
+    if vec.shape[0] < target_dim:
+        padded = np.zeros(target_dim, dtype=np.float64)
+        padded[: vec.shape[0]] = vec
+        return padded
+    return vec[:target_dim]
+
+
+def _prepare_obstacles(
+    obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]],
+    target_dim: int,
+) -> List[Tuple[np.ndarray, float]]:
+    """Normalise obstacles to tuples matching the scenario dimensionality."""
+
+    prepared: List[Tuple[np.ndarray, float]] = []
+    for obstacle in obstacles:
+        if isinstance(obstacle, ObstacleState):
+            centre = obstacle.centre
+            radius = obstacle.radius
+        else:
+            centre, radius = obstacle
+        centre_arr = _adjust_dimensionality(np.asarray(centre, dtype=np.float64), target_dim)
+        prepared.append((centre_arr, float(radius)))
+    return prepared
+
+
+def plan_with_rl_for_benchmark(
+    start: Sequence[float],
+    goal: Sequence[float],
+    obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]],
+    env_config: Optional[ScenarioConfig],
+    agent: PPO,
+    normalizer: Optional[ObservationNormalizer] = None,
+    max_attempts: int = 3,
+) -> PlannerResult:
+    """Run the RL-enhanced planner and return structured metrics."""
+
+    scenario = env_config or ScenarioConfig()
+    start_arr = _adjust_dimensionality(np.asarray(start, dtype=np.float64), scenario.n_joints)
+    goal_arr = _adjust_dimensionality(np.asarray(goal, dtype=np.float64), scenario.n_joints)
+    obstacle_list = _prepare_obstacles(obstacles, scenario.n_joints)
+
+    planner = RLEnhancedPlanner(agent=agent, scenario=scenario, normalizer=normalizer)
+    raw_result = planner.plan(
+        start_arr,
+        goal_arr,
+        obstacle_list,
+        scenario=scenario,
+        max_attempts=max_attempts,
+    )
+
+    metrics = raw_result.get("metrics", {}) if isinstance(raw_result, dict) else {}
+    params = metrics.get("final_params")
+    params_list: List[float] = []
+    if params is not None:
+        params_arr = np.asarray(params, dtype=np.float64).flatten()
+        params_list = params_arr.tolist()
+
+    success = bool(raw_result.get("success", False)) if isinstance(raw_result, dict) else False
+    path: List[np.ndarray] = []
+    if success:
+        path = [np.asarray(p, dtype=np.float64) for p in raw_result.get("path", []) or []]
+
+    planning_time = float(raw_result.get("planning_time", 0.0)) if isinstance(raw_result, dict) else 0.0
+    num_nodes = int(raw_result.get("num_nodes", len(raw_result.get("nodes", [])))) if isinstance(raw_result, dict) else 0
+    path_length = float(raw_result.get("path_length", 0.0)) if isinstance(raw_result, dict) else 0.0
+
+    if success and path and path_length == 0.0:
+        path_length = float(planner._compute_path_length(path))
+
+    return PlannerResult(
+        success=success,
+        path=path,
+        planning_time=planning_time,
+        num_nodes=num_nodes if success else 0,
+        path_length=path_length if success else 0.0,
+        params=params_list,
+        collision=bool(raw_result.get("collision", False)) if isinstance(raw_result, dict) else False,
+    )
 
 
 # ---------------------------------------------------------------------------

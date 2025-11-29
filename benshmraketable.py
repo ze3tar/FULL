@@ -22,7 +22,13 @@ try:
         prune_path,
         rrt_apf_guided,
     )
-    from rl_enhanced_apf_rrt import APFRRTEnv, PlannerParameters, ScenarioConfig
+    from rl_enhanced_apf_rrt import (
+        ObservationNormalizer,
+        PlannerParameters,
+        ScenarioConfig,
+        load_agent,
+        plan_with_rl_for_benchmark,
+    )
 except ImportError as e:  # pragma: no cover - import guard
     print(f"❌ Import error: {e}")
     sys.exit(1)
@@ -62,34 +68,43 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_model(model_path: str, normalizer_path: str) -> Tuple[PPO, Dict[str, np.ndarray]]:
+def load_model(model_path: str, normalizer_path: str) -> Tuple[PPO, ObservationNormalizer]:
     print("\n1. Loading RL model...")
     try:
-        model = PPO.load(model_path)
-        normalizer = np.load(normalizer_path)
+        model, loaded_normalizer = load_agent(Path(model_path))
+        normalizer: ObservationNormalizer
+        if Path(normalizer_path).exists():
+            normalizer = ObservationNormalizer.from_file(Path(normalizer_path))
+        elif loaded_normalizer is not None:
+            normalizer = loaded_normalizer
+        else:
+            raise FileNotFoundError(
+                "Observation normalizer not found; ensure obs_normalizer.npz is available."
+            )
         print(f" Model loaded: {model_path}")
-        print(f" Normalizer loaded: {normalizer_path}")
+        print(f" Normalizer loaded: {normalizer_path if Path(normalizer_path).exists() else loaded_normalizer}")
         return model, normalizer
     except Exception as exc:  # pragma: no cover - runtime guard
         print(f" Failed to load model: {exc}")
         sys.exit(1)
 
 
-def normalize_observation(obs: np.ndarray, normalizer: Dict[str, np.ndarray]) -> np.ndarray:
-    if "mean" in normalizer and "var" in normalizer:
-        return (obs - normalizer["mean"]) / np.sqrt(normalizer["var"] + 1e-8)
-    return obs
-
-
 def calc_stats(stats_dict: Dict[str, List[float]]) -> Tuple[float, float, float, float]:
-    success_rate = np.mean(stats_dict["success"]) * 100
-    if sum(stats_dict["success"]) > 0:
-        avg_time = np.mean([t for t, s in zip(stats_dict["time"], stats_dict["success"]) if s])
-        avg_nodes = np.mean([n for n, s in zip(stats_dict["nodes"], stats_dict["success"]) if s])
-        avg_length = np.mean([l for l, s in zip(stats_dict["length"], stats_dict["success"]) if s])
+    success_flags = stats_dict["success"]
+    success_rate = (np.mean(success_flags) * 100) if success_flags else 0.0
+    if any(success_flags):
+        avg_time = float(np.mean(stats_dict["time"])) if stats_dict["time"] else np.nan
+        avg_nodes = float(np.mean(stats_dict["nodes"])) if stats_dict["nodes"] else np.nan
+        avg_length = float(np.mean(stats_dict["length"])) if stats_dict["length"] else np.nan
     else:
         avg_time = avg_nodes = avg_length = np.nan
     return success_rate, avg_time, avg_nodes, avg_length
+
+
+def fmt(value: float, precision: str = "{:.2f}") -> str:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "N/A"
+    return precision.format(value)
 
 
 def record_trial(
@@ -98,11 +113,14 @@ def record_trial(
     nodes: List[Tuple[float, float, float]],
     elapsed: float,
     obstacles: np.ndarray,
+    *,
+    path_length_override: float | None = None,
+    node_count: int | None = None,
 ) -> None:
     pruned = prune_path(path, obstacles)
     stats["time"].append(elapsed)
-    stats["nodes"].append(len(nodes))
-    stats["length"].append(path_length(pruned))
+    stats["nodes"].append(node_count if node_count is not None else len(nodes))
+    stats["length"].append(path_length_override if path_length_override is not None else path_length(pruned))
     stats["success"].append(1)
 
 
@@ -179,36 +197,47 @@ def benchmark_scenario(
             elapsed_base = time.perf_counter() - start_time if time_base is None else time_base
 
             if path_base is not None:
-                record_trial(baseline_stats, path_base, nodes_base, elapsed_base, obstacles)
+                record_trial(
+                    baseline_stats,
+                    path_base,
+                    nodes_base,
+                    elapsed_base,
+                    obstacles,
+                    node_count=len(nodes_base),
+                )
             else:
                 baseline_stats["success"].append(0)
         except Exception as exc:
             print(f"   Baseline trial {idx} failed: {exc}")
             baseline_stats["success"].append(0)
 
-        # RL-enhanced
+        # RL-enhanced using unified planner
         try:
-            env_seed = int(seed.generate_state(1, dtype=np.uint32)[0])
-            env = APFRRTEnv(ScenarioConfig(difficulty="medium"), seed=env_seed)
-            obs, _ = env.reset()
-            obs_norm = normalize_observation(obs, normalizer)
-            action, _ = model.predict(obs_norm, deterministic=deterministic)
-
-            rl_params = PlannerParameters()
-            rl_params.apply_delta(action)
-
-            start_time = time.perf_counter()
-            path_rl, nodes_rl, parents_rl, time_rl = run_planner(
+            scenario_cfg = ScenarioConfig(
+                difficulty="medium",
+                n_joints=3,
+                dynamic_probability=0.0,
+            )
+            rl_result = plan_with_rl_for_benchmark(
                 start,
                 goal,
                 obstacles,
-                scenario["bounds"],
-                rl_params,
+                scenario_cfg,
+                model,
+                normalizer,
+                max_attempts=3,
             )
-            elapsed_rl = time.perf_counter() - start_time if time_rl is None else time_rl
 
-            if path_rl is not None:
-                record_trial(rl_stats, path_rl, nodes_rl, elapsed_rl, obstacles)
+            if rl_result.success:
+                record_trial(
+                    rl_stats,
+                    rl_result.path,
+                    rl_result.path,
+                    rl_result.planning_time,
+                    obstacles,
+                    path_length_override=rl_result.path_length,
+                    node_count=rl_result.num_nodes,
+                )
             else:
                 rl_stats["success"].append(0)
         except Exception as exc:
@@ -238,32 +267,49 @@ def benchmark_scenario(
     base_sr, base_time, base_nodes, base_length = calc_stats(baseline_stats)
     rl_sr, rl_time, rl_nodes, rl_length = calc_stats(rl_stats)
 
-    time_improv = ((base_time - rl_time) / base_time * 100) if not np.isnan(base_time) else 0
-    nodes_improv = ((base_nodes - rl_nodes) / base_nodes * 100) if not np.isnan(base_nodes) else 0
-    length_improv = ((base_length - rl_length) / base_length * 100) if not np.isnan(base_length) else 0
+    def improvement(base: float, rl: float) -> float:
+        if (
+            base is None
+            or rl is None
+            or (isinstance(base, float) and np.isnan(base))
+            or (isinstance(rl, float) and np.isnan(rl))
+            or base == 0
+        ):
+            return np.nan
+        return (base - rl) / base * 100
+
+    time_improv = improvement(base_time, rl_time)
+    nodes_improv = improvement(base_nodes, rl_nodes)
+    length_improv = improvement(base_length, rl_length)
 
     scenario_row = {
         "Scenario": scenario["name"],
-        "Baseline Success %": f"{base_sr:.1f}",
-        "RL Success %": f"{rl_sr:.1f}",
-        "Baseline Time (s)": f"{base_time:.2f}" if not np.isnan(base_time) else "N/A",
-        "RL Time (s)": f"{rl_time:.2f}" if not np.isnan(rl_time) else "N/A",
-        "Time Improvement %": f"{time_improv:.1f}",
-        "Baseline Nodes": f"{base_nodes:.0f}" if not np.isnan(base_nodes) else "N/A",
-        "RL Nodes": f"{rl_nodes:.0f}" if not np.isnan(rl_nodes) else "N/A",
-        "Nodes Improvement %": f"{nodes_improv:.1f}",
-        "Baseline Length (mm)": f"{base_length:.1f}" if not np.isnan(base_length) else "N/A",
-        "RL Length (mm)": f"{rl_length:.1f}" if not np.isnan(rl_length) else "N/A",
-        "Length Improvement %": f"{length_improv:.1f}",
+        "Baseline Success %": base_sr,
+        "RL Success %": rl_sr,
+        "Baseline Time (s)": base_time,
+        "RL Time (s)": rl_time,
+        "Time Improvement %": time_improv,
+        "Baseline Nodes": base_nodes,
+        "RL Nodes": rl_nodes,
+        "Nodes Improvement %": nodes_improv,
+        "Baseline Length (mm)": base_length,
+        "RL Length (mm)": rl_length,
+        "Length Improvement %": length_improv,
     }
 
     print(f"\n  Results for {scenario['name']}:")
     print(
-        f"    Baseline: {base_sr:.1f}% success, {base_time:.2f}s, {base_nodes:.0f} nodes, {base_length:.1f}mm"
+        f"    Baseline: {fmt(base_sr, '{:.1f}')}% success, "
+        f"{fmt(base_time)}s, {fmt(base_nodes, '{:.0f}')} nodes, {fmt(base_length, '{:.1f}')}mm"
     )
-    print(f"    RL:       {rl_sr:.1f}% success, {rl_time:.2f}s, {rl_nodes:.0f} nodes, {rl_length:.1f}mm")
     print(
-        f"    Improvement: {time_improv:.1f}% time, {nodes_improv:.1f}% nodes, {length_improv:.1f}% length"
+        f"    RL:       {fmt(rl_sr, '{:.1f}')}% success, "
+        f"{fmt(rl_time)}s, {fmt(rl_nodes, '{:.0f}')} nodes, {fmt(rl_length, '{:.1f}')}mm"
+    )
+    print(
+        "    Improvement: "
+        f"{fmt(time_improv, '{:.1f}')}% time, "
+        f"{fmt(nodes_improv, '{:.1f}')}% nodes, {fmt(length_improv, '{:.1f}')}% length"
     )
 
     return scenario_row, trial_rows
@@ -295,10 +341,26 @@ def main() -> None:
         per_trial_rows.extend(trial_rows)
 
     summary_df = pd.DataFrame(results)
+    display_df = summary_df.copy()
+    for column, precision in [
+        ("Baseline Success %", "{:.1f}"),
+        ("RL Success %", "{:.1f}"),
+        ("Baseline Time (s)", "{:.2f}"),
+        ("RL Time (s)", "{:.2f}"),
+        ("Time Improvement %", "{:.1f}"),
+        ("Baseline Nodes", "{:.0f}"),
+        ("RL Nodes", "{:.0f}"),
+        ("Nodes Improvement %", "{:.1f}"),
+        ("Baseline Length (mm)", "{:.1f}"),
+        ("RL Length (mm)", "{:.1f}"),
+        ("Length Improvement %", "{:.1f}"),
+    ]:
+        display_df[column] = display_df[column].apply(lambda v: fmt(v, precision))
+
     print("\n" + "=" * 80)
     print("FINAL BENCHMARK RESULTS")
     print("=" * 80)
-    print(summary_df.to_string(index=False))
+    print(display_df.to_string(index=False))
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -318,9 +380,9 @@ def main() -> None:
     print("  - Path length: ↓9% (1016mm → 920mm)")
 
     print("\nYour results:")
-    avg_time_improv = summary_df["Time Improvement %"].str.rstrip("%").astype(float).mean()
-    avg_nodes_improv = summary_df["Nodes Improvement %"].str.rstrip("%").astype(float).mean()
-    avg_length_improv = summary_df["Length Improvement %"].str.rstrip("%").astype(float).mean()
+    avg_time_improv = pd.to_numeric(summary_df["Time Improvement %"], errors="coerce").mean()
+    avg_nodes_improv = pd.to_numeric(summary_df["Nodes Improvement %"], errors="coerce").mean()
+    avg_length_improv = pd.to_numeric(summary_df["Length Improvement %"], errors="coerce").mean()
     print(f"  - Planning time: ↓{avg_time_improv:.1f}%")
     print(f"  - Nodes explored: ↓{avg_nodes_improv:.1f}%")
     print(f"  - Path length: ↓{avg_length_improv:.1f}%")
