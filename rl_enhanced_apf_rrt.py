@@ -97,6 +97,39 @@ class PlannerParameters:
     step_range: Tuple[float, float] = (0.1, 1.2)
     goal_bias_range: Tuple[float, float] = (0.0, 0.4)
 
+    # ------------------------------------------------------------------
+    # Legacy compatibility aliases
+    # ------------------------------------------------------------------
+    # Older evaluation scripts (e.g. ``benshmraketable.py``) expect
+    # ``PlannerParameters`` to expose ``K_att``, ``K_rep`` and ``d0`` fields
+    # matching the attractive gain, repulsive gain and influence distance.
+    # Providing property aliases keeps those scripts working while the
+    # underlying names remain descriptive for the RL components.
+
+    @property
+    def K_att(self) -> float:
+        return self.attractive_gain
+
+    @K_att.setter
+    def K_att(self, value: float) -> None:
+        self.attractive_gain = value
+
+    @property
+    def K_rep(self) -> float:
+        return self.repulsive_gain
+
+    @K_rep.setter
+    def K_rep(self, value: float) -> None:
+        self.repulsive_gain = value
+
+    @property
+    def d0(self) -> float:
+        return self.influence_distance
+
+    @d0.setter
+    def d0(self, value: float) -> None:
+        self.influence_distance = value
+
     def apply_delta(self, delta: Sequence[float]) -> None:
         """Apply an action delta and clamp to configured ranges."""
 
