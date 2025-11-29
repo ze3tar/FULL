@@ -144,15 +144,18 @@ def benchmark_scenario(
     seeds = np.random.SeedSequence(42).spawn(trials)
 
     for idx, seed in enumerate(seeds):
-        np.random.seed(seed.generate_state(1)[0])
+        # Seed numpy/random with a Python int to keep random generation compatible
+        base_seed = int(seed.generate_state(1, dtype=np.uint32)[0])
+        np.random.seed(base_seed)
         start = tuple(np.random.uniform(-40, -20, 3))
         goal = tuple(np.random.uniform(20, 40, 3))
+        obstacle_seed = int(seed.generate_state(1, dtype=np.uint32)[0])
         obstacles = create_random_spheres(
             num=scenario["num_obs"],
             bounds=scenario["bounds"],
             rmin=5,
             rmax=10,
-            seed=seed.generate_state(1)[0],
+            seed=obstacle_seed,
         )
 
         # Baseline
@@ -183,7 +186,8 @@ def benchmark_scenario(
 
         # RL-enhanced
         try:
-            env = APFRRTEnv(ScenarioConfig(difficulty="medium"), seed=seed.generate_state(1)[0])
+            env_seed = int(seed.generate_state(1, dtype=np.uint32)[0])
+            env = APFRRTEnv(ScenarioConfig(difficulty="medium"), seed=env_seed)
             obs, _ = env.reset()
             obs_norm = normalize_observation(obs, normalizer)
             action, _ = model.predict(obs_norm, deterministic=deterministic)
