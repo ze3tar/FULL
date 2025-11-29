@@ -6,6 +6,7 @@ summary and per-trial results for deeper analysis.
 """
 
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -89,20 +90,21 @@ def load_model(model_path: str, normalizer_path: str) -> Tuple[PPO, ObservationN
         sys.exit(1)
 
 
+def safe_mean(arr: List[float]) -> float:
+    return float(np.mean(arr)) if len(arr) > 0 else float("nan")
+
+
 def calc_stats(stats_dict: Dict[str, List[float]]) -> Tuple[float, float, float, float]:
     success_flags = stats_dict["success"]
     success_rate = (np.mean(success_flags) * 100) if success_flags else 0.0
-    if any(success_flags):
-        avg_time = float(np.mean(stats_dict["time"])) if stats_dict["time"] else np.nan
-        avg_nodes = float(np.mean(stats_dict["nodes"])) if stats_dict["nodes"] else np.nan
-        avg_length = float(np.mean(stats_dict["length"])) if stats_dict["length"] else np.nan
-    else:
-        avg_time = avg_nodes = avg_length = np.nan
-    return success_rate, avg_time, avg_nodes, avg_length
+    avg_time = safe_mean(stats_dict["time"]) if any(success_flags) else float("nan")
+    avg_nodes = safe_mean(stats_dict["nodes"]) if any(success_flags) else float("nan")
+    avg_length = safe_mean(stats_dict["length"]) if any(success_flags) else float("nan")
+    return success_rate, float(avg_time), float(avg_nodes), float(avg_length)
 
 
 def fmt(value: float, precision: str = "{:.2f}") -> str:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
         return "N/A"
     return precision.format(value)
 
@@ -213,20 +215,19 @@ def benchmark_scenario(
 
         # RL-enhanced using unified planner
         try:
-            scenario_cfg = ScenarioConfig(
-                difficulty="medium",
-                n_joints=3,
-                dynamic_probability=0.0,
-            )
-            rl_result = plan_with_rl_for_benchmark(
-                start,
-                goal,
-                obstacles,
-                scenario_cfg,
-                model,
-                normalizer,
-                max_attempts=3,
-            )
+            scenario_cfg = {
+                "env_config": ScenarioConfig(
+                    difficulty="medium",
+                    n_joints=3,
+                    dynamic_probability=0.0,
+                ),
+                "agent": model,
+                "normalizer": normalizer,
+                "obstacles": obstacles,
+                "max_attempts": 3,
+            }
+
+            rl_result = plan_with_rl_for_benchmark(start, goal, scenario_cfg)
 
             if rl_result.success:
                 record_trial(

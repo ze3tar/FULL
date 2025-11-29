@@ -224,10 +224,10 @@ class PlannerResult:
     """Structured result for benchmarking and CLI output."""
 
     success: bool
-    path: List[np.ndarray]
     planning_time: float
     num_nodes: int
     path_length: float
+    path: List[np.ndarray]
     params: List[float]
     collision: bool = False
 
@@ -1308,31 +1308,41 @@ def _prepare_obstacles(
     return prepared
 
 
-def plan_with_rl_for_benchmark(
+def run_rl_apf_rrt(
     start: Sequence[float],
     goal: Sequence[float],
-    obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]],
-    env_config: Optional[ScenarioConfig],
-    agent: PPO,
-    normalizer: Optional[ObservationNormalizer] = None,
-    max_attempts: int = 3,
-) -> PlannerResult:
-    """Run the RL-enhanced planner and return structured metrics."""
+    scenario_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Execute the RL-enhanced APF-RRT planner used by the CLI test command."""
 
-    scenario = env_config or ScenarioConfig()
-    start_arr = _adjust_dimensionality(np.asarray(start, dtype=np.float64), scenario.n_joints)
-    goal_arr = _adjust_dimensionality(np.asarray(goal, dtype=np.float64), scenario.n_joints)
-    obstacle_list = _prepare_obstacles(obstacles, scenario.n_joints)
+    env_config = scenario_config.get("env_config") or ScenarioConfig()
+    agent: Optional[PPO] = scenario_config.get("agent")
+    normalizer: Optional[ObservationNormalizer] = scenario_config.get("normalizer")
+    obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]] = scenario_config.get("obstacles", [])
+    max_attempts = int(scenario_config.get("max_attempts", 3))
 
-    planner = RLEnhancedPlanner(agent=agent, scenario=scenario, normalizer=normalizer)
-    raw_result = planner.plan(
+    start_arr = _adjust_dimensionality(np.asarray(start, dtype=np.float64), env_config.n_joints)
+    goal_arr = _adjust_dimensionality(np.asarray(goal, dtype=np.float64), env_config.n_joints)
+    obstacle_list = _prepare_obstacles(obstacles, env_config.n_joints)
+
+    planner = RLEnhancedPlanner(agent=agent, scenario=env_config, normalizer=normalizer)
+    return planner.plan(
         start_arr,
         goal_arr,
         obstacle_list,
-        scenario=scenario,
+        scenario=env_config,
         max_attempts=max_attempts,
     )
 
+
+def plan_with_rl_for_benchmark(
+    start: Sequence[float],
+    goal: Sequence[float],
+    scenario_config: Dict[str, Any],
+) -> PlannerResult:
+    """Use the RL planner for benchmarks while returning structured metrics."""
+
+    raw_result = run_rl_apf_rrt(start, goal, scenario_config)
     metrics = raw_result.get("metrics", {}) if isinstance(raw_result, dict) else {}
     params = metrics.get("final_params")
     params_list: List[float] = []
@@ -1341,23 +1351,37 @@ def plan_with_rl_for_benchmark(
         params_list = params_arr.tolist()
 
     success = bool(raw_result.get("success", False)) if isinstance(raw_result, dict) else False
-    path: List[np.ndarray] = []
-    if success:
-        path = [np.asarray(p, dtype=np.float64) for p in raw_result.get("path", []) or []]
-
     planning_time = float(raw_result.get("planning_time", 0.0)) if isinstance(raw_result, dict) else 0.0
     num_nodes = int(raw_result.get("num_nodes", len(raw_result.get("nodes", [])))) if isinstance(raw_result, dict) else 0
     path_length = float(raw_result.get("path_length", 0.0)) if isinstance(raw_result, dict) else 0.0
 
-    if success and path and path_length == 0.0:
-        path_length = float(planner._compute_path_length(path))
+    path: List[np.ndarray] = []
+    if success:
+        path = [np.asarray(p, dtype=np.float64) for p in raw_result.get("path", []) or []]
+        if path and path_length == 0.0:
+            path_length = float(
+                np.sum(
+                    np.linalg.norm(
+                        np.asarray(path[i], dtype=np.float64)[:3]
+                        - np.asarray(path[i - 1], dtype=np.float64)[:3]
+                    )
+                    for i in range(1, len(path))
+                )
+            )
+
+    if not success:
+        planning_time = 0.0
+        num_nodes = 0
+        path_length = 0.0
+        path = []
+        params_list = []
 
     return PlannerResult(
         success=success,
-        path=path,
         planning_time=planning_time,
-        num_nodes=num_nodes if success else 0,
-        path_length=path_length if success else 0.0,
+        num_nodes=num_nodes,
+        path_length=path_length,
+        path=path,
         params=params_list,
         collision=bool(raw_result.get("collision", False)) if isinstance(raw_result, dict) else False,
     )
