@@ -3,7 +3,9 @@
 This repository contains an augmented artificial potential field (APF) guided
 RRT planner with reinforcement learning (RL) enhancements, benchmarking
 utilities, smoothing modules, and ROS integration helpers for robotics
-experiments.
+experiments. It bundles everything from deterministic baselines through
+real-time replanning utilities so you can benchmark, train, and deploy the
+stack end-to-end.
 
 ## Project Snapshot
 - **Baseline reproduction** – `baseline_enhanced.py` mirrors the canonical
@@ -18,14 +20,18 @@ experiments.
 ## Current Progress
 - `SUMMARY.md` captures measured gains (≈44% faster planning, ≈31% fewer nodes,
   ≈9% shorter paths) comparing the RL-enhanced planner to the baseline, plus a
-  component map that links every major module.
+  component map that links every major module. The metrics reflect the
+  integrated PPO, PSO, and LSTM upgrades already merged into this branch.
 - `IMPLEMENTATION_ROADMAP.md` enumerates the outstanding tasks across the five
   phases (ROS foundation through dynamic integration). Use it to track what
-  remains before a full deployment.
+  remains before a full deployment; completed items are marked in place.
 - `ML_ENHANCEMENT_ARCHITECTURE.md` and `ROS_INTEGRATION_GUIDE.md` already spell
   out how the learning components, ROS bridge, and MoveIt scene connect; the
   code matches those docs so you can follow along while finishing the remaining
   roadmap boxes.
+- `ROS_INTEGRATION_GUIDE.md` and `apf_rrt_planner.launch` document the current
+  MoveIt and rosbridge wiring that is live on this branch, so the README usage
+  below reflects the latest connection points.
 
 ## Repository Structure
 ### Documentation & Planning
@@ -137,6 +143,7 @@ available in your environment (the scripts only rely on the ROS Python APIs and
 `rosbridge_server`).
 
 ## Usage
+### Quick CLI recipes
 - **Smoke test dependencies:**
   ```bash
   python quick_test.py
@@ -145,14 +152,67 @@ available in your environment (the scripts only rely on the ROS Python APIs and
   ```bash
   python baseline_enhanced.py --export-path path_points_baseline.csv
   ```
-- **Benchmark RL-enhanced planner vs. baseline:**
+- **Benchmark RL-enhanced planner vs. baseline (with plot + JSON log):**
   ```bash
   python comprehensive_comparison.py --model models/best_model.zip --plot
+  ```
+- **Train PPO with curriculum controls:**
+  ```bash
+  python rl_enhanced_apf_rrt.py train --timesteps 500000 --n-envs 4 --difficulty medium --dynamic-prob 0.35
+  ```
+- **Load a checkpoint for qualitative tests or quick benchmarking:**
+  ```bash
+  python rl_enhanced_apf_rrt.py benchmark --model models/best_model.zip
+  python rl_enhanced_apf_rrt.py test --model models/best_model.zip --export-path path_points_improved.csv --plot
   ```
 - **Smooth an exported path with PSO:**
   ```bash
   python pso_path_smoother.py --input path_points_baseline.csv --output smoothed.csv
   ```
+- **Run the full CI-equivalent suite locally:**
+  ```bash
+  python run_all_tests.py
+  ```
+
+### Dynamic environments and replanning
+- **Simulate moving obstacles:** Import `DynamicEnvironmentSimulator` to spawn
+  random spheres and stream obstacle states into your planner or ROS scene. The
+  simulator is deterministic when you seed NumPy and supports bounded
+  accelerations for stress testing. See `dynamic_environment_simulator.py` for
+  a ready-made callback API.
+- **Trigger real-time replans:** Use `RealTimeReplanner` to monitor predicted
+  obstacles and replan when deviation or collision risk exceeds configured
+  thresholds. The class exposes ROS helpers (`publish_path_to_rviz` and
+  `sync_planning_scene`) so you can publish a replanned path and mirror
+  obstacles into MoveIt without additional boilerplate. Pair it with the
+  dynamic simulator or your own obstacle predictions.
+
+### ROS/Motion planning linkage
+- Follow the `ROS_INTEGRATION_GUIDE.md` quick start for wiring `rosbridge_server`
+  and MoveIt. The shipped `apf_rrt_planner.launch` file reflects the current
+  branch configuration used by the benchmarking scripts.
+- Export a path (baseline or RL-enhanced), then publish through the MoveIt
+  bridge:
+  ```bash
+  python baseline_enhanced.py --export-path path_points_baseline.csv
+  python ros_moveit_bridge.py --path path_points_baseline.csv --rosbridge-url ws://localhost:9090
+  ```
+  Swap in RL checkpoints as needed:
+  ```bash
+  python rl_enhanced_apf_rrt.py test --model models/best_model.zip --export-path path_points_improved.csv
+  python ros_moveit_bridge.py --path path_points_improved.csv --rosbridge-url ws://localhost:9090
+  ```
+
+### Assets and branches at a glance
+- **Pretrained model:** `models/best_model.zip.zip` is the latest PPO checkpoint
+  aligned with the metrics in `SUMMARY.md`. Point the CLI at this file for a
+  plug-and-play benchmark run.
+- **Benchmark artefacts:** `benchmarks/final_benchmark.*` captures CSV, JSON,
+  and plot outputs produced by `comprehensive_comparison.py` on the current
+  branch.
+- **Roadmap alignment:** The README usage above mirrors the live code paths in
+  `main`—no feature flags are required to toggle the PPO critic, PSO smoothing,
+  or LSTM obstacle forecasting discussed in the roadmap and summary.
 
 ## Linking with ROS via rosbridge
 You can connect the planner outputs to a running ROS graph using
