@@ -320,6 +320,8 @@ class APFRRTEnv(Env):
         seed: Optional[int] = None,
         debug: bool = False,
         dynamic_manager: Optional["DynamicObstacleManager"] = None,
+        max_nodes: Optional[int] = None,
+        max_iterations: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.scenario = scenario
@@ -329,6 +331,10 @@ class APFRRTEnv(Env):
         self.planner = RRTPlanner(self)
         self.prev_dist_to_goal: float = 0.0
         self.dynamic_manager = dynamic_manager
+        self.max_nodes = int(max_nodes) if max_nodes is not None else int(self.scenario.max_steps)
+        self.max_iterations = (
+            int(max_iterations) if max_iterations is not None else int(self.scenario.max_steps)
+        )
 
         # Observation encodes planner state + tunables so PPO can correlate them
         # with progress: distance, heading, obstacle info, parameter vector.
@@ -362,6 +368,7 @@ class APFRRTEnv(Env):
         self._last_parents: Optional[Dict[int, Optional[int]]] = None
         self._last_motion_dir = np.zeros(self.scenario.n_joints, dtype=np.float64)
         self._stuck_steps = 0
+        self._last_iterations = 0
 
         self.reset()
 
@@ -551,9 +558,10 @@ class APFRRTEnv(Env):
         return self.scenario.sample_configuration(self.rng)
 
     def _find_nearest_node(self, target: np.ndarray) -> Tuple[int, np.ndarray]:
-        dists = [np.linalg.norm(node - target) for node in self.nodes]
+        nodes_arr = np.asarray(self.nodes)
+        dists = np.linalg.norm(nodes_arr - target, axis=1)
         index = int(np.argmin(dists))
-        return index, self.nodes[index]
+        return index, nodes_arr[index]
 
     def _compute_direction(self, q_near: np.ndarray, q_rand: np.ndarray) -> np.ndarray:
         total_force = self._apf_force(q_near)
@@ -649,7 +657,9 @@ class APFRRTEnv(Env):
         path: Optional[List[np.ndarray]] = None
         start_time = time.perf_counter()
 
-        for _ in range(self.scenario.max_steps):
+        iteration = 0
+        while iteration < self.max_iterations and len(self.nodes) < self.max_nodes:
+            iteration += 1
             q_rand = self._sample_random_configuration()
             idx_near, q_near = self._find_nearest_node(q_rand)
             direction = self._compute_direction(q_near, q_rand)
@@ -662,7 +672,7 @@ class APFRRTEnv(Env):
 
             if self._in_collision(q_new):
                 collision = True
-                break
+                continue
 
             self.nodes.append(q_new)
             parents[len(self.nodes) - 1] = idx_near
@@ -681,6 +691,7 @@ class APFRRTEnv(Env):
             self._advance_obstacles()
 
         planning_time = float(time.perf_counter() - start_time)
+        self._last_iterations = iteration
         if path is not None:
             path_length = sum(
                 float(
@@ -692,6 +703,7 @@ class APFRRTEnv(Env):
                 for i in range(len(path) - 1)
             )
         self._last_path = path
+        self._last_parents = parents
         return PlanResult(
             success=success,
             collision=collision,
@@ -1116,6 +1128,8 @@ class RLEnhancedPlanner:
         q_goal: np.ndarray,
         obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]],
         max_iters: int = 5_000,
+        max_nodes: int = 512,
+        max_iterations: int = 2_000,
         scenario: Optional[ScenarioConfig] = None,
         max_attempts: int = 3,
     ) -> Dict[str, Any]:
@@ -1137,6 +1151,9 @@ class RLEnhancedPlanner:
         last_metrics: Dict[str, float] = {}
         last_plan_time = 0.0
 
+        resolved_max_nodes = int(self.config.get("max_nodes", max_nodes))
+        resolved_max_iterations = int(self.config.get("max_iterations", max_iterations))
+
         for attempt in range(max_attempts):
             attempt_seed: Optional[int]
             if base_seed is not None:
@@ -1148,6 +1165,8 @@ class RLEnhancedPlanner:
                 scenario_cfg,
                 seed=attempt_seed,
                 debug=bool(self.config.get("debug", False)),
+                max_nodes=resolved_max_nodes,
+                max_iterations=resolved_max_iterations,
             )
             env.q_start = q_start.copy()
             env.q_goal = q_goal.copy()
@@ -1171,7 +1190,7 @@ class RLEnhancedPlanner:
 
             result = env._run_planning_episode()
             plan_time = result.planning_time
-            metrics = self._build_metrics(env, env.scenario.max_steps)
+            metrics = self._build_metrics(env, env._last_iterations)
             metrics.update(
                 {
                     "restart_attempts": float(attempt + 1),
@@ -1294,9 +1313,9 @@ class RLEnhancedPlanner:
         if isinstance(obstacle, ObstacleState):
             return obstacle.copy()
         centre, radius = obstacle
-        centre_arr = np.asarray(centre, dtype=np.float32).copy()
-        if centre_arr.shape[0] != n_joints:
-            raise ValueError("Obstacle dimension mismatch with scenario joints")
+        centre_arr = _adjust_dimensionality(np.asarray(centre, dtype=np.float64), n_joints).astype(
+            np.float32
+        )
         return ObstacleState(centre_arr, float(radius), np.zeros(n_joints, dtype=np.float32))
 
 
@@ -1341,6 +1360,8 @@ def run_rl_apf_rrt(
     normalizer: Optional[ObservationNormalizer] = scenario_config.get("normalizer")
     obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]] = scenario_config.get("obstacles", [])
     max_attempts = int(scenario_config.get("max_attempts", 3))
+    max_nodes = int(scenario_config.get("max_nodes", env_config.max_steps))
+    max_iterations = int(scenario_config.get("max_iterations", env_config.max_steps))
     planner_config: Dict[str, Any] = {}
     if "seed" in scenario_config and scenario_config["seed"] is not None:
         planner_config["seed"] = int(scenario_config["seed"])
@@ -1358,6 +1379,8 @@ def run_rl_apf_rrt(
         obstacle_list,
         scenario=env_config,
         max_attempts=max_attempts,
+        max_nodes=max_nodes,
+        max_iterations=max_iterations,
     )
 
 
@@ -1369,7 +1392,8 @@ def plan(
     goal_state: Sequence[float],
     dynamic_prob: float = 0.0,
     difficulty: str = "medium",
-    max_nodes: int = 128,
+    max_nodes: int = 512,
+    max_iterations: int = 2_000,
     seed: Optional[int] = None,
     obstacles: Optional[Sequence[Union[Obstacle, Tuple[np.ndarray, float]]]] = None,
     max_attempts: int = 3,
@@ -1383,7 +1407,7 @@ def plan(
     env_config = ScenarioConfig(
         difficulty=difficulty,
         dynamic_probability=dynamic_prob,
-        max_steps=max_nodes,
+        max_steps=max_iterations,
     )
 
     raw_result = run_rl_apf_rrt(
@@ -1396,19 +1420,44 @@ def plan(
             "obstacles": obstacles or [],
             "max_attempts": max_attempts,
             "seed": seed,
+            "max_nodes": max_nodes,
+            "max_iterations": max_iterations,
         },
     )
 
     success = bool(raw_result.get("success")) if isinstance(raw_result, dict) else False
-    nodes_list: Sequence[Any] = raw_result.get("nodes", []) if isinstance(raw_result, dict) else []
-    node_count = int(raw_result.get("num_nodes", len(nodes_list))) if isinstance(raw_result, dict) else 0
+    path = raw_result.get("path") if isinstance(raw_result, dict) else []
+    path = path or []
+    planning_time = float(raw_result.get("planning_time", 0.0)) if isinstance(raw_result, dict) else 0.0
+    node_count = int(
+        raw_result.get("num_nodes", raw_result.get("nodes", len(path)))
+        if isinstance(raw_result, dict)
+        else len(path)
+    )
+    path_length = float(raw_result.get("path_length", 0.0)) if isinstance(raw_result, dict) else 0.0
+
+    if not success and path:
+        goal_arr = _adjust_dimensionality(np.asarray(goal_state, dtype=np.float64), env_config.n_joints)
+        if np.linalg.norm(np.asarray(path[-1], dtype=np.float64) - goal_arr) <= env_config.goal_tolerance:
+            success = True
+
+    if success and path and path_length == 0.0 and len(path) > 1:
+        path_length = float(
+            np.sum(
+                np.linalg.norm(
+                    np.asarray(path[i], dtype=np.float64)[:3]
+                    - np.asarray(path[i - 1], dtype=np.float64)[:3]
+                )
+                for i in range(1, len(path))
+            )
+        )
 
     return {
         "success": success,
-        "path": raw_result.get("path") if isinstance(raw_result, dict) else None,
+        "path": path,
         "nodes": node_count,
-        "path_length": float(raw_result.get("path_length", 0.0)) if isinstance(raw_result, dict) else 0.0,
-        "planning_time": float(raw_result.get("planning_time", 0.0)) if isinstance(raw_result, dict) else 0.0,
+        "path_length": path_length,
+        "planning_time": planning_time,
         "raw_result": raw_result,
     }
 
