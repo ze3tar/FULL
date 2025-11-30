@@ -165,6 +165,16 @@ available in your environment (the scripts only rely on the ROS Python APIs and
   python rl_enhanced_apf_rrt.py benchmark --model models/best_model.zip
   python rl_enhanced_apf_rrt.py test --model models/best_model.zip --export-path path_points_improved.csv --plot
   ```
+- **Compare baseline vs RL-enhanced planners and emit CSV summaries:**
+  ```bash
+  python rl_enhanced_apf_rrt.py compare \
+      --model-path models/best_model.zip \
+      --normalizer-path models/obs_normalizer.npz \
+      --trials 60 \
+      --output-dir benchmarks/
+  ```
+  The command prints a table with success/path metrics per scenario while writing
+  `summary.csv` and `trials.csv` into `--output-dir` for downstream analysis.
 - **Smooth an exported path with PSO:**
   ```bash
   python pso_path_smoother.py --input path_points_baseline.csv --output smoothed.csv
