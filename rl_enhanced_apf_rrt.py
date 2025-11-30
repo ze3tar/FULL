@@ -672,7 +672,7 @@ class APFRRTEnv(Env):
 
             if self._in_collision(q_new):
                 collision = True
-                break
+                continue
 
             self.nodes.append(q_new)
             parents[len(self.nodes) - 1] = idx_near
@@ -1313,9 +1313,9 @@ class RLEnhancedPlanner:
         if isinstance(obstacle, ObstacleState):
             return obstacle.copy()
         centre, radius = obstacle
-        centre_arr = np.asarray(centre, dtype=np.float32).copy()
-        if centre_arr.shape[0] != n_joints:
-            raise ValueError("Obstacle dimension mismatch with scenario joints")
+        centre_arr = _adjust_dimensionality(np.asarray(centre, dtype=np.float64), n_joints).astype(
+            np.float32
+        )
         return ObstacleState(centre_arr, float(radius), np.zeros(n_joints, dtype=np.float32))
 
 
