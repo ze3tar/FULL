@@ -213,6 +213,27 @@ available in your environment (the scripts only rely on the ROS Python APIs and
   python ros_moveit_bridge.py --path path_points_improved.csv --rosbridge-url ws://localhost:9090
   ```
 
+### ROS 2 package
+- Build the ROS 2 wrapper from the `ros2/` folder inside a colcon workspace:
+  ```bash
+  mkdir -p ~/ws_apf_rrt/src
+  cp -r ros2/apf_rrt_ros2 ~/ws_apf_rrt/src/
+  cd ~/ws_apf_rrt
+  colcon build --symlink-install
+  source install/setup.bash
+  ```
+- Publish a saved CSV path to `nav_msgs/Path` and `geometry_msgs/PoseArray`:
+  ```bash
+  ros2 launch apf_rrt_ros2 apf_rrt_planner_ros2.launch.py \
+    path_file:=/absolute/path/to/path_points_improved.csv \
+    frame_id:=map \
+    publish_rate:=1.0 \
+    publish_pose_array:=true
+  ```
+  The `path_file` parameter expects the planner CSV format (`x,y,z` in
+  millimetres). Poses are converted to metres before publishing so they can be
+  visualised directly in RViz2 or consumed by MoveIt 2 nodes.
+
 ### Assets and branches at a glance
 - **Pretrained model:** `models/best_model.zip.zip` is the latest PPO checkpoint
   aligned with the metrics in `SUMMARY.md`. Point the CLI at this file for a
