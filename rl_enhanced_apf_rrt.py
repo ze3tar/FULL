@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,7 @@ except Exception:  # pragma: no cover - TensorFlow is optional
     tf = None  # type: ignore
 
 import numpy as np
+import pandas as pd
 import torch
 from gymnasium import Env, spaces
 from stable_baselines3 import PPO
@@ -48,6 +50,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
+from baseline_enhanced import create_random_spheres, path_length, prune_path, rrt_apf_guided
 from path_exporter import export_path
 
 # Matplotlib is an optional dependency; importing lazily keeps the module usable
@@ -1515,6 +1518,330 @@ def plan_with_rl_for_benchmark(
 
 
 # ---------------------------------------------------------------------------
+# Baseline vs RL comparison helpers (migrated from benshmraketable.py)
+# ---------------------------------------------------------------------------
+
+
+def _safe_mean(values: Sequence[Optional[float]]) -> Optional[float]:
+    filtered = [v for v in values if v is not None]
+    return float(np.mean(filtered)) if filtered else None
+
+
+def _format_stat(value: Optional[float]) -> str:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "N/A"
+    return f"{value:.3f}"
+
+
+def _calc_comparison_stats(
+    stats_dict: Dict[str, List[Optional[float]]]
+) -> Tuple[float, Optional[float], Optional[float], Optional[float]]:
+    success_flags = stats_dict["success"]
+    success_mean = _safe_mean([float(v) for v in success_flags])
+    success_rate = (success_mean * 100) if success_mean is not None else 0.0
+    avg_time = _safe_mean(stats_dict["time"]) if any(success_flags) else None
+    avg_nodes = _safe_mean(stats_dict["nodes"]) if any(success_flags) else None
+    avg_length = _safe_mean(stats_dict["length"]) if any(success_flags) else None
+    return success_rate, avg_time, avg_nodes, avg_length
+
+
+def _record_baseline_trial(
+    stats: Dict[str, List[Optional[float]]],
+    path: Iterable[Tuple[float, float, float]],
+    nodes: List[Tuple[float, float, float]],
+    elapsed: float,
+    obstacles: Sequence[Tuple[Tuple[float, float, float], float]],
+    *,
+    path_length_override: Optional[float] = None,
+    node_count: Optional[int] = None,
+) -> None:
+    pruned = prune_path(path, obstacles)
+    stats["time"].append(elapsed)
+    stats["nodes"].append(node_count if node_count is not None else len(nodes))
+    stats["length"].append(
+        path_length_override if path_length_override is not None else path_length(pruned)
+    )
+    stats["success"].append(1)
+
+
+def _benchmark_scenario_comparison(
+    scenario: Dict[str, Any],
+    trials: int,
+    model: PPO,
+    normalizer: Optional[ObservationNormalizer],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    print(f"\n{'=' * 80}")
+    print(f"Testing Scenario: {scenario['name']} ({scenario['num_obs']} obstacles)")
+    print(f"{'=' * 80}")
+
+    baseline_stats: Dict[str, List[Optional[float]]] = {
+        "time": [],
+        "nodes": [],
+        "length": [],
+        "success": [],
+    }
+    rl_stats: Dict[str, List[Optional[float]]] = {
+        "time": [],
+        "nodes": [],
+        "length": [],
+        "success": [],
+    }
+    trial_rows: List[Dict[str, Any]] = []
+
+    seeds = np.random.SeedSequence(42).spawn(trials)
+
+    for idx, seed in enumerate(seeds):
+        base_seed = int(seed.generate_state(1, dtype=np.uint32)[0])
+        random.seed(base_seed)
+        np.random.seed(base_seed)
+        start = tuple(np.random.uniform(-40, -20, 3))
+        goal = tuple(np.random.uniform(20, 40, 3))
+        obstacle_seed = int(seed.generate_state(1, dtype=np.uint32)[0])
+        obstacles = create_random_spheres(
+            num=scenario["num_obs"],
+            bounds=scenario["bounds"],
+            rmin=5,
+            rmax=10,
+            seed=obstacle_seed,
+        )
+
+        try:
+            baseline_params = PlannerParameters()
+            baseline_params.step_size = 5.0
+            baseline_params.K_att = 1.0
+            baseline_params.K_rep = 0.2
+            baseline_params.d0 = 15.0
+
+            start_time = time.perf_counter()
+            path_base, nodes_base, parents_base, time_base = rrt_apf_guided(
+                start,
+                goal,
+                obstacles,
+                scenario["bounds"],
+                max_iters=1000,
+                r_step=baseline_params.step_size,
+                goal_radius=10.0,
+                K_att=baseline_params.K_att,
+                K_rep=baseline_params.K_rep,
+                d0=baseline_params.d0,
+            )
+            elapsed_base = time.perf_counter() - start_time if time_base is None else time_base
+
+            if path_base is not None:
+                _record_baseline_trial(
+                    baseline_stats,
+                    path_base,
+                    nodes_base,
+                    elapsed_base,
+                    obstacles,
+                    node_count=len(nodes_base),
+                )
+            else:
+                baseline_stats["success"].append(0)
+                baseline_stats["time"].append(None)
+                baseline_stats["nodes"].append(None)
+                baseline_stats["length"].append(None)
+        except Exception as exc:
+            print(f"   Baseline trial {idx} failed: {exc}")
+            baseline_stats["success"].append(0)
+            baseline_stats["time"].append(None)
+            baseline_stats["nodes"].append(None)
+            baseline_stats["length"].append(None)
+
+        try:
+            rl_result = plan(
+                model=model,
+                normalizer=normalizer,
+                initial_state=start,
+                goal_state=goal,
+                dynamic_prob=scenario.get("dynamic_prob", 0.0),
+                difficulty=scenario.get("difficulty", "medium"),
+                max_nodes=scenario.get("max_nodes", 512),
+                max_iterations=scenario.get("max_iterations", 2000),
+                seed=base_seed,
+                obstacles=obstacles,
+                max_attempts=scenario.get("max_attempts", 3),
+            )
+
+            if rl_result["success"]:
+                rl_stats["success"].append(1)
+                rl_stats["time"].append(float(rl_result["planning_time"]))
+                rl_stats["nodes"].append(int(rl_result["nodes"]))
+                rl_stats["length"].append(float(rl_result["path_length"]))
+            else:
+                rl_stats["success"].append(0)
+                rl_stats["time"].append(None)
+                rl_stats["nodes"].append(None)
+                rl_stats["length"].append(None)
+        except Exception as exc:
+            print(f"   RL trial {idx} failed: {exc}")
+            rl_stats["success"].append(0)
+            rl_stats["time"].append(None)
+            rl_stats["nodes"].append(None)
+            rl_stats["length"].append(None)
+
+        trial_rows.append(
+            {
+                "scenario": scenario["name"],
+                "trial": idx,
+                "start": start,
+                "goal": goal,
+                "baseline_success": baseline_stats["success"][-1]
+                if baseline_stats["success"]
+                else 0,
+                "rl_success": rl_stats["success"][-1] if rl_stats["success"] else 0,
+                "baseline_time": baseline_stats["time"][-1] if baseline_stats["time"] else None,
+                "rl_time": rl_stats["time"][-1] if rl_stats["time"] else None,
+                "baseline_nodes": baseline_stats["nodes"][-1] if baseline_stats["nodes"] else None,
+                "rl_nodes": rl_stats["nodes"][-1] if rl_stats["nodes"] else None,
+                "baseline_length": baseline_stats["length"][-1]
+                if baseline_stats["length"]
+                else None,
+                "rl_length": rl_stats["length"][-1] if rl_stats["length"] else None,
+            }
+        )
+
+    base_sr, base_time, base_nodes, base_length = _calc_comparison_stats(baseline_stats)
+    rl_sr, rl_time, rl_nodes, rl_length = _calc_comparison_stats(rl_stats)
+
+    def improvement(base: Optional[float], rl: Optional[float]) -> Optional[float]:
+        if base is None or rl is None or base == 0:
+            return None
+        return (base - rl) / base * 100
+
+    time_improv = improvement(base_time, rl_time)
+    nodes_improv = improvement(base_nodes, rl_nodes)
+    length_improv = improvement(base_length, rl_length)
+
+    scenario_row = {
+        "Scenario": scenario["name"],
+        "Baseline Success %": base_sr,
+        "RL Success %": rl_sr,
+        "Baseline Time (s)": base_time,
+        "RL Time (s)": rl_time,
+        "Time Improvement %": time_improv,
+        "Baseline Nodes": base_nodes,
+        "RL Nodes": rl_nodes,
+        "Nodes Improvement %": nodes_improv,
+        "Baseline Length (mm)": base_length,
+        "RL Length (mm)": rl_length,
+        "Length Improvement %": length_improv,
+    }
+
+    print(f"\n  Results for {scenario['name']}:")
+    print(
+        f"    Baseline: {_format_stat(base_sr)}% success, "
+        f"{_format_stat(base_time)}s, {_format_stat(base_nodes)} nodes, {_format_stat(base_length)}mm"
+    )
+    print(
+        f"    RL:       {_format_stat(rl_sr)}% success, "
+        f"{_format_stat(rl_time)}s, {_format_stat(rl_nodes)} nodes, {_format_stat(rl_length)}mm"
+    )
+    print(
+        "    Improvement: "
+        f"{_format_stat(time_improv)}% time, "
+        f"{_format_stat(nodes_improv)}% nodes, {_format_stat(length_improv)}% length"
+    )
+
+    return scenario_row, trial_rows
+
+
+def benchmark_baseline_vs_rl(
+    *,
+    model: PPO,
+    normalizer: Optional[ObservationNormalizer],
+    trials: int = 60,
+    output_dir: Optional[Union[str, Path]] = Path("/mnt/user-data/outputs"),
+    scenarios: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Run a side-by-side benchmark comparing baseline APF-RRT and RL-enhanced planners."""
+
+    scenario_list = list(scenarios) if scenarios is not None else [
+        {
+            "name": "Simple",
+            "num_obs": 2,
+            "bounds": ((-50, 50), (-50, 50), (-50, 50)),
+            "difficulty": "easy",
+            "dynamic_prob": 0.0,
+            "max_nodes": 1000,
+        },
+        {
+            "name": "Medium",
+            "num_obs": 5,
+            "bounds": ((-50, 50), (-50, 50), (-50, 50)),
+            "difficulty": "medium",
+            "dynamic_prob": 0.0,
+            "max_nodes": 1000,
+        },
+        {
+            "name": "Complex",
+            "num_obs": 8,
+            "bounds": ((-50, 50), (-50, 50), (-50, 50)),
+            "difficulty": "hard",
+            "dynamic_prob": 0.0,
+            "max_nodes": 1000,
+        },
+    ]
+
+    results: List[Dict[str, Any]] = []
+    per_trial_rows: List[Dict[str, Any]] = []
+
+    for scenario in scenario_list:
+        scenario_row, trial_rows = _benchmark_scenario_comparison(
+            scenario, trials, model, normalizer
+        )
+        results.append(scenario_row)
+        per_trial_rows.extend(trial_rows)
+
+    summary_df = pd.DataFrame(results)
+    display_df = summary_df.copy()
+    for column in [
+        "Baseline Success %",
+        "RL Success %",
+        "Baseline Time (s)",
+        "RL Time (s)",
+        "Time Improvement %",
+        "Baseline Nodes",
+        "RL Nodes",
+        "Nodes Improvement %",
+        "Baseline Length (mm)",
+        "RL Length (mm)",
+        "Length Improvement %",
+    ]:
+        display_df[column] = display_df[column].apply(_format_stat)
+
+    print("\n" + "=" * 80)
+    print("FINAL BENCHMARK RESULTS")
+    print("=" * 80)
+    print(display_df.to_string(index=False))
+
+    if output_dir is not None:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        summary_path = output_path / "baseline_vs_rl_summary.csv"
+        trials_path = output_path / "baseline_vs_rl_trials.csv"
+        summary_df.to_csv(summary_path, index=False)
+        pd.DataFrame(per_trial_rows).to_csv(trials_path, index=False)
+        print(f"\n Summary saved to: {summary_path}")
+        print(f" Per-trial details saved to: {trials_path}")
+
+    def summary_mean(column: str) -> float:
+        mean_val = pd.to_numeric(summary_df[column], errors="coerce").mean()
+        return 0.0 if pd.isna(mean_val) else float(mean_val)
+
+    avg_time_improv = summary_mean("Time Improvement %")
+    avg_nodes_improv = summary_mean("Nodes Improvement %")
+    avg_length_improv = summary_mean("Length Improvement %")
+
+    print("\nAVERAGE IMPROVEMENTS (higher is better)")
+    print(f"  - Planning time: ↓{avg_time_improv:.1f}%")
+    print(f"  - Nodes explored: ↓{avg_nodes_improv:.1f}%")
+    print(f"  - Path length: ↓{avg_length_improv:.1f}%")
+
+    return {"summary": summary_df, "trials": pd.DataFrame(per_trial_rows)}
+
+
+# ---------------------------------------------------------------------------
 # Backwards compatibility aliases
 # ---------------------------------------------------------------------------
 
@@ -1716,6 +2043,30 @@ def _parse_args() -> argparse.Namespace:
         help="Persist the planned path and metadata to disk",
     )
 
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help="Benchmark baseline APF-RRT against the RL-enhanced variant and print a comparison table",
+    )
+    compare_parser.add_argument("--trials", type=int, default=60, help="Number of trials per scenario")
+    compare_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("./models/final_model.zip"),
+        help="Path to the PPO policy zip (default: ./models/final_model.zip)",
+    )
+    compare_parser.add_argument(
+        "--normalizer-path",
+        type=Path,
+        default=Path("./models/obs_normalizer.npz"),
+        help="Path to observation normalizer (default: ./models/obs_normalizer.npz)",
+    )
+    compare_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("/mnt/user-data/outputs"),
+        help="Directory to store CSV outputs",
+    )
+
     benchmark_parser = subparsers.add_parser("benchmark", help="Report success / collision metrics")
     benchmark_parser.add_argument("--model", type=Path, default=Path("./models/best_model.zip"))
     benchmark_parser.add_argument("--episodes", type=int, default=40)
@@ -1754,6 +2105,16 @@ def main() -> None:
             seed=args.seed,
             critic_strong=args.critic_strong,
             debug=args.debug,
+        )
+        return
+
+    if args.mode == "compare":
+        model, normalizer = load_trained_model(args.model_path, args.normalizer_path)
+        benchmark_baseline_vs_rl(
+            model=model,
+            normalizer=normalizer,
+            trials=args.trials,
+            output_dir=args.output_dir,
         )
         return
 

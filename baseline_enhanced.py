@@ -4,9 +4,13 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import yaml
 
-from rl_enhanced_apf_rrt import DEFAULT_GOAL_TOLERANCE, is_success
+
+DEFAULT_GOAL_TOLERANCE = 0.2
+
+
+def is_success(ee_pos: np.ndarray, goal_pos: np.ndarray, threshold: float = DEFAULT_GOAL_TOLERANCE) -> bool:
+    return float(np.linalg.norm(ee_pos - goal_pos)) < threshold
 
 # -------------------------
 # Utility functions
@@ -224,6 +228,8 @@ def create_random_spheres(num=6, bounds=((0,500),(0,500),(0,300)), rmin=20, rmax
 # -------------------------
 def export_to_ros_yaml(path, obstacles, filename='path_for_ros.yaml'):
     """Export path and obstacles in ROS-compatible YAML format"""
+    import yaml
+
     if path is None:
         print(f"Cannot export None path to {filename}")
         return
@@ -262,6 +268,8 @@ def export_obstacles_csv(obstacles, filename='obstacles.csv'):
 
 def create_rviz_marker_file(obstacles, filename='obstacles.marker'):
     """Create RViz marker config for visualization"""
+    import yaml
+
     markers = []
     for idx, (center, radius) in enumerate(obstacles):
         marker = {
