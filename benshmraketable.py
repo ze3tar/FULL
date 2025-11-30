@@ -27,8 +27,8 @@ try:
         ObservationNormalizer,
         PlannerParameters,
         ScenarioConfig,
-        load_agent,
-        plan_with_rl_for_benchmark,
+        load_trained_model,
+        plan,
     )
 except ImportError as e:  # pragma: no cover - import guard
     print(f"❌ Import error: {e}")
@@ -72,41 +72,39 @@ def parse_args() -> argparse.Namespace:
 def load_model(model_path: str, normalizer_path: str) -> Tuple[PPO, ObservationNormalizer]:
     print("\n1. Loading RL model...")
     try:
-        model, loaded_normalizer = load_agent(Path(model_path))
-        normalizer: ObservationNormalizer
-        if Path(normalizer_path).exists():
-            normalizer = ObservationNormalizer.from_file(Path(normalizer_path))
-        elif loaded_normalizer is not None:
-            normalizer = loaded_normalizer
-        else:
+        model, normalizer = load_trained_model(model_path, normalizer_path)
+        if normalizer is None:
             raise FileNotFoundError(
                 "Observation normalizer not found; ensure obs_normalizer.npz is available."
             )
         print(f" Model loaded: {model_path}")
-        print(f" Normalizer loaded: {normalizer_path if Path(normalizer_path).exists() else loaded_normalizer}")
+        print(
+            " Normalizer loaded: "
+            f"{normalizer_path if Path(normalizer_path).exists() else 'embedded in model'}"
+        )
         return model, normalizer
     except Exception as exc:  # pragma: no cover - runtime guard
         print(f" Failed to load model: {exc}")
         sys.exit(1)
 
 
-def safe_mean(arr: List[float]) -> float:
-    return float(np.mean(arr)) if len(arr) > 0 else float("nan")
+def safe_mean(values: List[float | None]) -> float | None:
+    values = [v for v in values if v is not None]
+    return float(np.mean(values)) if len(values) > 0 else None
 
 
-def calc_stats(stats_dict: Dict[str, List[float]]) -> Tuple[float, float, float, float]:
+def calc_stats(stats_dict: Dict[str, List[float | None]]) -> Tuple[float, float | None, float | None, float | None]:
     success_flags = stats_dict["success"]
-    success_rate = (np.mean(success_flags) * 100) if success_flags else 0.0
-    avg_time = safe_mean(stats_dict["time"]) if any(success_flags) else float("nan")
-    avg_nodes = safe_mean(stats_dict["nodes"]) if any(success_flags) else float("nan")
-    avg_length = safe_mean(stats_dict["length"]) if any(success_flags) else float("nan")
-    return success_rate, float(avg_time), float(avg_nodes), float(avg_length)
+    success_mean = safe_mean(success_flags)
+    success_rate = (success_mean * 100) if success_mean is not None else 0.0
+    avg_time = safe_mean(stats_dict["time"]) if any(success_flags) else None
+    avg_nodes = safe_mean(stats_dict["nodes"]) if any(success_flags) else None
+    avg_length = safe_mean(stats_dict["length"]) if any(success_flags) else None
+    return success_rate, avg_time, avg_nodes, avg_length
 
 
-def fmt(value: float, precision: str = "{:.2f}") -> str:
-    if value is None or (isinstance(value, float) and math.isnan(value)):
-        return "N/A"
-    return precision.format(value)
+def fmt(x: float | None) -> str:
+    return "N/A" if x is None or (isinstance(x, float) and math.isnan(x)) else f"{x:.3f}"
 
 
 def record_trial(
@@ -209,41 +207,46 @@ def benchmark_scenario(
                 )
             else:
                 baseline_stats["success"].append(0)
+                baseline_stats["time"].append(None)
+                baseline_stats["nodes"].append(None)
+                baseline_stats["length"].append(None)
         except Exception as exc:
             print(f"   Baseline trial {idx} failed: {exc}")
             baseline_stats["success"].append(0)
+            baseline_stats["time"].append(None)
+            baseline_stats["nodes"].append(None)
+            baseline_stats["length"].append(None)
 
         # RL-enhanced using unified planner
         try:
-            scenario_cfg = {
-                "env_config": ScenarioConfig(
-                    difficulty="medium",
-                    n_joints=3,
-                    dynamic_probability=0.0,
-                ),
-                "agent": model,
-                "normalizer": normalizer,
-                "obstacles": obstacles,
-                "max_attempts": 3,
-            }
+            rl_result = plan(
+                model=model,
+                normalizer=normalizer,
+                initial_state=start,
+                goal_state=goal,
+                dynamic_prob=scenario.get("dynamic_prob", 0.0),
+                difficulty=scenario.get("difficulty", "medium"),
+                max_nodes=scenario.get("max_nodes", 1000),
+                seed=base_seed,
+                obstacles=obstacles,
+            )
 
-            rl_result = plan_with_rl_for_benchmark(start, goal, scenario_cfg)
-
-            if rl_result.success:
-                record_trial(
-                    rl_stats,
-                    rl_result.path,
-                    rl_result.path,
-                    rl_result.planning_time,
-                    obstacles,
-                    path_length_override=rl_result.path_length,
-                    node_count=rl_result.num_nodes,
-                )
+            if rl_result["success"]:
+                rl_stats["success"].append(1)
+                rl_stats["time"].append(float(rl_result["planning_time"]))
+                rl_stats["nodes"].append(int(rl_result["nodes"]))
+                rl_stats["length"].append(float(rl_result["path_length"]))
             else:
                 rl_stats["success"].append(0)
+                rl_stats["time"].append(None)
+                rl_stats["nodes"].append(None)
+                rl_stats["length"].append(None)
         except Exception as exc:
             print(f"   RL trial {idx} failed: {exc}")
             rl_stats["success"].append(0)
+            rl_stats["time"].append(None)
+            rl_stats["nodes"].append(None)
+            rl_stats["length"].append(None)
 
         if (idx + 1) % 10 == 0:
             print(f"  Progress: {idx + 1}/{trials} trials completed")
@@ -256,27 +259,21 @@ def benchmark_scenario(
                 "goal": goal,
                 "baseline_success": baseline_stats["success"][-1] if baseline_stats["success"] else 0,
                 "rl_success": rl_stats["success"][-1] if rl_stats["success"] else 0,
-                "baseline_time": baseline_stats["time"][-1] if baseline_stats["time"] else np.nan,
-                "rl_time": rl_stats["time"][-1] if rl_stats["time"] else np.nan,
-                "baseline_nodes": baseline_stats["nodes"][-1] if baseline_stats["nodes"] else np.nan,
-                "rl_nodes": rl_stats["nodes"][-1] if rl_stats["nodes"] else np.nan,
-                "baseline_length": baseline_stats["length"][-1] if baseline_stats["length"] else np.nan,
-                "rl_length": rl_stats["length"][-1] if rl_stats["length"] else np.nan,
+                "baseline_time": baseline_stats["time"][-1] if baseline_stats["time"] else None,
+                "rl_time": rl_stats["time"][-1] if rl_stats["time"] else None,
+                "baseline_nodes": baseline_stats["nodes"][-1] if baseline_stats["nodes"] else None,
+                "rl_nodes": rl_stats["nodes"][-1] if rl_stats["nodes"] else None,
+                "baseline_length": baseline_stats["length"][-1] if baseline_stats["length"] else None,
+                "rl_length": rl_stats["length"][-1] if rl_stats["length"] else None,
             }
         )
 
     base_sr, base_time, base_nodes, base_length = calc_stats(baseline_stats)
     rl_sr, rl_time, rl_nodes, rl_length = calc_stats(rl_stats)
 
-    def improvement(base: float, rl: float) -> float:
-        if (
-            base is None
-            or rl is None
-            or (isinstance(base, float) and np.isnan(base))
-            or (isinstance(rl, float) and np.isnan(rl))
-            or base == 0
-        ):
-            return np.nan
+    def improvement(base: float | None, rl: float | None) -> float | None:
+        if base is None or rl is None or base == 0:
+            return None
         return (base - rl) / base * 100
 
     time_improv = improvement(base_time, rl_time)
@@ -300,17 +297,17 @@ def benchmark_scenario(
 
     print(f"\n  Results for {scenario['name']}:")
     print(
-        f"    Baseline: {fmt(base_sr, '{:.1f}')}% success, "
-        f"{fmt(base_time)}s, {fmt(base_nodes, '{:.0f}')} nodes, {fmt(base_length, '{:.1f}')}mm"
+        f"    Baseline: {fmt(base_sr)}% success, "
+        f"{fmt(base_time)}s, {fmt(base_nodes)} nodes, {fmt(base_length)}mm"
     )
     print(
-        f"    RL:       {fmt(rl_sr, '{:.1f}')}% success, "
-        f"{fmt(rl_time)}s, {fmt(rl_nodes, '{:.0f}')} nodes, {fmt(rl_length, '{:.1f}')}mm"
+        f"    RL:       {fmt(rl_sr)}% success, "
+        f"{fmt(rl_time)}s, {fmt(rl_nodes)} nodes, {fmt(rl_length)}mm"
     )
     print(
         "    Improvement: "
-        f"{fmt(time_improv, '{:.1f}')}% time, "
-        f"{fmt(nodes_improv, '{:.1f}')}% nodes, {fmt(length_improv, '{:.1f}')}% length"
+        f"{fmt(time_improv)}% time, "
+        f"{fmt(nodes_improv)}% nodes, {fmt(length_improv)}% length"
     )
 
     return scenario_row, trial_rows
@@ -326,9 +323,30 @@ def main() -> None:
     model, normalizer = load_model(args.model_path, args.normalizer_path)
 
     scenarios = [
-        {"name": "Simple", "num_obs": 2, "bounds": ((-50, 50), (-50, 50), (-50, 50))},
-        {"name": "Medium", "num_obs": 5, "bounds": ((-50, 50), (-50, 50), (-50, 50))},
-        {"name": "Complex", "num_obs": 8, "bounds": ((-50, 50), (-50, 50), (-50, 50))},
+        {
+            "name": "Simple",
+            "num_obs": 2,
+            "bounds": ((-50, 50), (-50, 50), (-50, 50)),
+            "difficulty": "easy",
+            "dynamic_prob": 0.0,
+            "max_nodes": 1000,
+        },
+        {
+            "name": "Medium",
+            "num_obs": 5,
+            "bounds": ((-50, 50), (-50, 50), (-50, 50)),
+            "difficulty": "medium",
+            "dynamic_prob": 0.0,
+            "max_nodes": 1000,
+        },
+        {
+            "name": "Complex",
+            "num_obs": 8,
+            "bounds": ((-50, 50), (-50, 50), (-50, 50)),
+            "difficulty": "hard",
+            "dynamic_prob": 0.0,
+            "max_nodes": 1000,
+        },
     ]
 
     results: List[Dict[str, object]] = []
@@ -343,20 +361,20 @@ def main() -> None:
 
     summary_df = pd.DataFrame(results)
     display_df = summary_df.copy()
-    for column, precision in [
-        ("Baseline Success %", "{:.1f}"),
-        ("RL Success %", "{:.1f}"),
-        ("Baseline Time (s)", "{:.2f}"),
-        ("RL Time (s)", "{:.2f}"),
-        ("Time Improvement %", "{:.1f}"),
-        ("Baseline Nodes", "{:.0f}"),
-        ("RL Nodes", "{:.0f}"),
-        ("Nodes Improvement %", "{:.1f}"),
-        ("Baseline Length (mm)", "{:.1f}"),
-        ("RL Length (mm)", "{:.1f}"),
-        ("Length Improvement %", "{:.1f}"),
+    for column in [
+        "Baseline Success %",
+        "RL Success %",
+        "Baseline Time (s)",
+        "RL Time (s)",
+        "Time Improvement %",
+        "Baseline Nodes",
+        "RL Nodes",
+        "Nodes Improvement %",
+        "Baseline Length (mm)",
+        "RL Length (mm)",
+        "Length Improvement %",
     ]:
-        display_df[column] = display_df[column].apply(lambda v: fmt(v, precision))
+        display_df[column] = display_df[column].apply(fmt)
 
     print("\n" + "=" * 80)
     print("FINAL BENCHMARK RESULTS")
@@ -381,9 +399,13 @@ def main() -> None:
     print("  - Path length: ↓9% (1016mm → 920mm)")
 
     print("\nYour results:")
-    avg_time_improv = pd.to_numeric(summary_df["Time Improvement %"], errors="coerce").mean()
-    avg_nodes_improv = pd.to_numeric(summary_df["Nodes Improvement %"], errors="coerce").mean()
-    avg_length_improv = pd.to_numeric(summary_df["Length Improvement %"], errors="coerce").mean()
+    def summary_mean(column: str) -> float:
+        mean_val = pd.to_numeric(summary_df[column], errors="coerce").mean()
+        return 0.0 if pd.isna(mean_val) else float(mean_val)
+
+    avg_time_improv = summary_mean("Time Improvement %")
+    avg_nodes_improv = summary_mean("Nodes Improvement %")
+    avg_length_improv = summary_mean("Length Improvement %")
     print(f"  - Planning time: ↓{avg_time_improv:.1f}%")
     print(f"  - Nodes explored: ↓{avg_nodes_improv:.1f}%")
     print(f"  - Path length: ↓{avg_length_improv:.1f}%")

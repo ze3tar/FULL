@@ -1012,6 +1012,27 @@ def load_agent(model_path: Path) -> Tuple[PPO, Optional[ObservationNormalizer]]:
     return model, normalizer
 
 
+def load_trained_model(
+    model_path: Union[str, Path], normalizer_path: Optional[Union[str, Path]] = None
+) -> Tuple[PPO, Optional[ObservationNormalizer]]:
+    """Load a trained PPO policy and its observation normaliser.
+
+    Explicit ``normalizer_path`` takes precedence; otherwise we fall back to the
+    co-located ``obs_normalizer.npz`` next to the model if available.
+    """
+
+    model, discovered_normalizer = load_agent(Path(model_path))
+
+    if normalizer_path is None:
+        return model, discovered_normalizer
+
+    normalizer_file = Path(normalizer_path)
+    if normalizer_file.exists():
+        return model, ObservationNormalizer.from_file(normalizer_file)
+
+    return model, discovered_normalizer
+
+
 def benchmark_agent(
     agent: PPO,
     normalizer: Optional[ObservationNormalizer] = None,
@@ -1320,12 +1341,17 @@ def run_rl_apf_rrt(
     normalizer: Optional[ObservationNormalizer] = scenario_config.get("normalizer")
     obstacles: Sequence[Union[Obstacle, Tuple[np.ndarray, float]]] = scenario_config.get("obstacles", [])
     max_attempts = int(scenario_config.get("max_attempts", 3))
+    planner_config: Dict[str, Any] = {}
+    if "seed" in scenario_config and scenario_config["seed"] is not None:
+        planner_config["seed"] = int(scenario_config["seed"])
 
     start_arr = _adjust_dimensionality(np.asarray(start, dtype=np.float64), env_config.n_joints)
     goal_arr = _adjust_dimensionality(np.asarray(goal, dtype=np.float64), env_config.n_joints)
     obstacle_list = _prepare_obstacles(obstacles, env_config.n_joints)
 
-    planner = RLEnhancedPlanner(agent=agent, scenario=env_config, normalizer=normalizer)
+    planner = RLEnhancedPlanner(
+        agent=agent, scenario=env_config, normalizer=normalizer, config=planner_config
+    )
     return planner.plan(
         start_arr,
         goal_arr,
@@ -1333,6 +1359,58 @@ def run_rl_apf_rrt(
         scenario=env_config,
         max_attempts=max_attempts,
     )
+
+
+def plan(
+    *,
+    model: PPO,
+    normalizer: Optional[ObservationNormalizer],
+    initial_state: Sequence[float],
+    goal_state: Sequence[float],
+    dynamic_prob: float = 0.0,
+    difficulty: str = "medium",
+    max_nodes: int = 128,
+    seed: Optional[int] = None,
+    obstacles: Optional[Sequence[Union[Obstacle, Tuple[np.ndarray, float]]]] = None,
+    max_attempts: int = 3,
+) -> Dict[str, Any]:
+    """Convenience wrapper for the RL planner used by benchmarks.
+
+    Returns a dictionary containing at least ``success``, ``path``, ``nodes``,
+    ``path_length`` and ``planning_time`` fields.
+    """
+
+    env_config = ScenarioConfig(
+        difficulty=difficulty,
+        dynamic_probability=dynamic_prob,
+        max_steps=max_nodes,
+    )
+
+    raw_result = run_rl_apf_rrt(
+        start=initial_state,
+        goal=goal_state,
+        scenario_config={
+            "env_config": env_config,
+            "agent": model,
+            "normalizer": normalizer,
+            "obstacles": obstacles or [],
+            "max_attempts": max_attempts,
+            "seed": seed,
+        },
+    )
+
+    success = bool(raw_result.get("success")) if isinstance(raw_result, dict) else False
+    nodes_list: Sequence[Any] = raw_result.get("nodes", []) if isinstance(raw_result, dict) else []
+    node_count = int(raw_result.get("num_nodes", len(nodes_list))) if isinstance(raw_result, dict) else 0
+
+    return {
+        "success": success,
+        "path": raw_result.get("path") if isinstance(raw_result, dict) else None,
+        "nodes": node_count,
+        "path_length": float(raw_result.get("path_length", 0.0)) if isinstance(raw_result, dict) else 0.0,
+        "planning_time": float(raw_result.get("planning_time", 0.0)) if isinstance(raw_result, dict) else 0.0,
+        "raw_result": raw_result,
+    }
 
 
 def plan_with_rl_for_benchmark(
