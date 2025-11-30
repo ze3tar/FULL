@@ -28,7 +28,7 @@ try:
         PlannerParameters,
         ScenarioConfig,
         load_trained_model,
-        plan,
+        plan as rl_plan,
     )
 except ImportError as e:  # pragma: no cover - import guard
     print(f"❌ Import error: {e}")
@@ -219,14 +219,15 @@ def benchmark_scenario(
 
         # RL-enhanced using unified planner
         try:
-            rl_result = plan(
+            rl_result = rl_plan(
                 model=model,
                 normalizer=normalizer,
                 initial_state=start,
                 goal_state=goal,
                 dynamic_prob=scenario.get("dynamic_prob", 0.0),
                 difficulty=scenario.get("difficulty", "medium"),
-                max_nodes=scenario.get("max_nodes", 1000),
+                max_nodes=scenario.get("max_nodes", 512),
+                max_iterations=scenario.get("max_iterations", 2000),
                 seed=base_seed,
                 obstacles=obstacles,
             )
