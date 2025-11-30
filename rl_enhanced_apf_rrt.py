@@ -1351,6 +1351,27 @@ def _prepare_obstacles(
     return prepared
 
 
+def _rescale_point_to_joint_bounds(
+    point: Sequence[float], bounds: Sequence[Tuple[float, float]], joint_min: float, joint_max: float
+) -> np.ndarray:
+    """Rescale a workspace point (e.g., in millimetres) into the joint-space range.
+
+    The baseline benchmark samples points within ``bounds`` (≈\ ``[-50, 50]``) while the
+    RL environment expects joint angles within ``[joint_min, joint_max]`` (≈\ ``[-π, π]``).
+    This helper linearly maps the workspace coordinates into the joint range so the RL
+    agent receives inputs that match its training distribution.
+    """
+
+    bounds_arr = np.asarray(bounds, dtype=np.float64)
+    mins = bounds_arr[:, 0]
+    spans = np.maximum(bounds_arr[:, 1] - bounds_arr[:, 0], 1e-6)
+    point_arr = np.asarray(point, dtype=np.float64)
+
+    normalised = (np.clip(point_arr, mins, mins + spans) - mins) / spans
+    joint_span = float(joint_max - joint_min)
+    return np.clip(joint_min + normalised * joint_span, joint_min, joint_max).astype(np.float64)
+
+
 def run_rl_apf_rrt(
     start: Sequence[float],
     goal: Sequence[float],
@@ -1586,6 +1607,12 @@ def _benchmark_scenario_comparison(
         "length": [],
         "success": [],
     }
+    scenario_cfg = ScenarioConfig(
+        difficulty=scenario.get("difficulty", "medium"),
+        dynamic_probability=scenario.get("dynamic_prob", 0.0),
+        max_steps=scenario.get("max_iterations", 2000),
+    )
+
     trial_rows: List[Dict[str, Any]] = []
 
     seeds = np.random.SeedSequence(42).spawn(trials)
@@ -1649,17 +1676,39 @@ def _benchmark_scenario_comparison(
             baseline_stats["length"].append(None)
 
         try:
+            joint_start = _adjust_dimensionality(
+                _rescale_point_to_joint_bounds(start, scenario["bounds"], scenario_cfg.joint_min, scenario_cfg.joint_max),
+                scenario_cfg.n_joints,
+            )
+            joint_goal = _adjust_dimensionality(
+                _rescale_point_to_joint_bounds(goal, scenario["bounds"], scenario_cfg.joint_min, scenario_cfg.joint_max),
+                scenario_cfg.n_joints,
+            )
+
+            span = np.asarray([b[1] - b[0] for b in scenario["bounds"]], dtype=np.float64)
+            scale_factor = float((scenario_cfg.joint_max - scenario_cfg.joint_min) / np.max(span))
+            rl_obstacles = [
+                (
+                    _adjust_dimensionality(
+                        _rescale_point_to_joint_bounds(centre, scenario["bounds"], scenario_cfg.joint_min, scenario_cfg.joint_max),
+                        scenario_cfg.n_joints,
+                    ),
+                    float(radius * scale_factor),
+                )
+                for centre, radius in obstacles
+            ]
+
             rl_result = plan(
                 model=model,
                 normalizer=normalizer,
-                initial_state=start,
-                goal_state=goal,
-                dynamic_prob=scenario.get("dynamic_prob", 0.0),
-                difficulty=scenario.get("difficulty", "medium"),
+                initial_state=joint_start,
+                goal_state=joint_goal,
+                dynamic_prob=scenario_cfg.dynamic_probability,
+                difficulty=scenario_cfg.difficulty,
                 max_nodes=scenario.get("max_nodes", 512),
                 max_iterations=scenario.get("max_iterations", 2000),
                 seed=base_seed,
-                obstacles=obstacles,
+                obstacles=rl_obstacles,
                 max_attempts=scenario.get("max_attempts", 3),
             )
 
