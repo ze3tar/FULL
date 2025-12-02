@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>FULL_interfaces</name>
+  <version>0.0.1</version>
+  <description>Interfaces for FULL planners.</description>
+  <maintainer email="maintainer@example.com">Maintainer</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rosidl_default_generators</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+</package>

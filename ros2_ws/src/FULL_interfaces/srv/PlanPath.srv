@@ -1,0 +1,7 @@
+string group_name
+sensor_msgs/JointState start
+sensor_msgs/JointState goal
+---
+bool success
+string message
+trajectory_msgs/JointTrajectory trajectory

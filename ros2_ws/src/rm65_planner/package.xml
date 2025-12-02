@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rm65_planner</name>
+  <version>0.0.1</version>
+  <description>APF-guided RRT planner for RM65.</description>
+  <maintainer email="maintainer@example.com">Maintainer</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>Eigen3</depend>
+  <depend>rm65_kinematics</depend>
+</package>
