@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: rm65_description
+    relative_path: urdf/rm_65_6f_description.urdf
+  srdf:
+    relative_path: config/rm65.srdf
+  package_settings:
+    author_name: gigi
+    author_email: gigi@mail.com
+    generated_timestamp: 1764576745
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
