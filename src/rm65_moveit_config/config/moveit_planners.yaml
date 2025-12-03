@@ -1,0 +1,11 @@
+planning_pipelines:
+  pipelines: ["rm65_apf_rrt"]
+rm65_apf_rrt:
+  planning_plugin: rm65_moveit_plugin/APFRRTPlannerPlugin
+  request_adapters: >-
+    default_planner_request_adapters/ResolveConstraintFrames
+    default_planner_request_adapters/FixWorkspaceBounds
+    default_planner_request_adapters/FixStartStateBounds
+    default_planner_request_adapters/FixStartStateCollision
+    default_planner_request_adapters/FixStartStatePathConstraints
+  start_state_max_bounds_error: 0.1

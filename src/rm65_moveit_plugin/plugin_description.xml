@@ -1,0 +1,7 @@
+<library path="rm65_moveit_plugin">
+  <class name="rm65_moveit_plugin/APFRRTPlannerPlugin"
+         type="rm65_moveit_plugin::APFRRTPlannerPlugin"
+         base_class_type="planning_interface::PlannerManager">
+    <description>APF-RRT planner for RM65</description>
+  </class>
+</library>
