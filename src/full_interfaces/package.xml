@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>FULL_interfaces</name>
+  <name>full_interfaces</name>
   <version>0.0.0</version>
   <description>Custom interfaces for FULL RM65 integration.</description>
   <maintainer email="user@example.com">maintainer</maintainer>
