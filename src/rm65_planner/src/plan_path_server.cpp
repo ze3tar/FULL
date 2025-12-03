@@ -11,7 +11,7 @@
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <trajectory_msgs/msg/joint_trajectory_point.hpp>
 
-#include "FULL_interfaces/srv/plan_path.hpp"
+#include "full_interfaces/srv/plan_path.hpp"
 #include "rm65_planner/apf_rrt_planner.hpp"
 
 namespace rm65_planner {
@@ -81,13 +81,13 @@ class PlanPathServer : public rclcpp::Node {
     q_max << 3.107, 2.269, 2.356, 3.107, 2.234, 6.283;
     planner_.setJointLimits(q_min, q_max);
 
-    service_ = create_service<FULL_interfaces::srv::PlanPath>(
+    service_ = create_service<full_interfaces::srv::PlanPath>(
         "/rm65/plan_path", std::bind(&PlanPathServer::handleRequest, this, _1, _2));
   }
 
  private:
-  void handleRequest(const std::shared_ptr<FULL_interfaces::srv::PlanPath::Request> request,
-                     std::shared_ptr<FULL_interfaces::srv::PlanPath::Response> response) {
+  void handleRequest(const std::shared_ptr<full_interfaces::srv::PlanPath::Request> request,
+                     std::shared_ptr<full_interfaces::srv::PlanPath::Response> response) {
     if (request->group_name != "arm") {
       response->success = false;
       response->message = "Unsupported group_name";
@@ -110,7 +110,7 @@ class PlanPathServer : public rclcpp::Node {
   }
 
   APFRRTPlanner planner_;
-  rclcpp::Service<FULL_interfaces::srv::PlanPath>::SharedPtr service_;
+  rclcpp::Service<full_interfaces::srv::PlanPath>::SharedPtr service_;
 };
 
 }  // namespace rm65_planner

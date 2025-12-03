@@ -8,7 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(FULL_interfaces REQUIRED)
+find_package(full_interfaces REQUIRED)
 find_package(rm65_kinematics REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -29,7 +29,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC include)
 
 add_executable(rm65_plan_path_server src/plan_path_server.cpp)
 target_link_libraries(rm65_plan_path_server ${PROJECT_NAME})
-ament_target_dependencies(rm65_plan_path_server rclcpp FULL_interfaces trajectory_msgs sensor_msgs Eigen3)
+ament_target_dependencies(rm65_plan_path_server rclcpp full_interfaces trajectory_msgs sensor_msgs Eigen3)
 
 install(TARGETS ${PROJECT_NAME} rm65_plan_path_server
   ARCHIVE DESTINATION lib
