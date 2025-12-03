@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rm65_moveit_plugin</name>
+  <version>0.0.0</version>
+  <description>MoveIt2 planner plugin wrapping APF-RRT for RM65.</description>
+  <maintainer email="user@example.com">maintainer</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <build_depend>moveit_core</build_depend>
+  <build_depend>moveit_planning_interface</build_depend>
+  <build_depend>pluginlib</build_depend>
+  <build_depend>rm65_planner</build_depend>
+  <build_depend>rm65_kinematics</build_depend>
+  <build_depend>Eigen3</build_depend>
+  <build_depend>rclcpp</build_depend>
+  <build_depend>ament_index_cpp</build_depend>
+  <build_depend>yaml-cpp</build_depend>
+  <build_depend>full_integration</build_depend>
+
+  <exec_depend>moveit_core</exec_depend>
+  <exec_depend>moveit_planning_interface</exec_depend>
+  <exec_depend>pluginlib</exec_depend>
+  <exec_depend>rm65_planner</exec_depend>
+  <exec_depend>rm65_kinematics</exec_depend>
+  <exec_depend>Eigen3</exec_depend>
+  <exec_depend>rclcpp</exec_depend>
+  <exec_depend>ament_index_cpp</exec_depend>
+  <exec_depend>yaml-cpp</exec_depend>
+  <exec_depend>full_integration</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <pluginlib plugin="plugin_description.xml"/>
+  </export>
+</package>
