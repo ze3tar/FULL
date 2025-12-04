@@ -1,9 +1,9 @@
 import unittest
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     import torch
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    torch = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    torch = None                
     _TORCH_ERROR = exc
 else:
     _TORCH_ERROR = None

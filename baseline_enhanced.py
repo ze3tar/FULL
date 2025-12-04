@@ -12,9 +12,9 @@ DEFAULT_GOAL_TOLERANCE = 0.2
 def is_success(ee_pos: np.ndarray, goal_pos: np.ndarray, threshold: float = DEFAULT_GOAL_TOLERANCE) -> bool:
     return float(np.linalg.norm(ee_pos - goal_pos)) < threshold
 
-# -------------------------
-# Utility functions
-# -------------------------
+                           
+                   
+                           
 GOAL_TOLERANCE_MM = DEFAULT_GOAL_TOLERANCE * 100.0
 
 
@@ -42,17 +42,17 @@ def path_length(path):
     if path is None or len(path) < 2: return 0.0
     return sum(dist(path[i], path[i+1]) for i in range(len(path)-1))
 
-# -------------------------
-# Sampling
-# -------------------------
+                           
+          
+                           
 def sample_free(bounds, goal=None, goal_bias=0.0):
     if goal is not None and random.random() < goal_bias:
         return tuple(goal)
     return (random.uniform(*bounds[0]), random.uniform(*bounds[1]), random.uniform(*bounds[2]))
 
-# -------------------------
-# Basic RRT
-# -------------------------
+                           
+           
+                           
 def rrt_basic(
     start,
     goal,
@@ -96,9 +96,9 @@ def rrt_basic(
     runtime = time.time() - start_time
     return None, nodes, parents, runtime
 
-# -------------------------
-# APF utilities
-# -------------------------
+                           
+               
+                           
 def compute_apf_force(x_near, goal, obstacles, K_att=1.0, K_rep=0.3, d0=60.0):
     """Compute APF force at position x_near"""
     v_att = np.array(goal) - np.array(x_near)
@@ -124,9 +124,9 @@ def compute_apf_force(x_near, goal, obstacles, K_att=1.0, K_rep=0.3, d0=60.0):
     F_total = F_att + F_rep
     return F_total, F_att, F_rep
 
-# -------------------------
-# APF-guided RRT
-# -------------------------
+                           
+                
+                           
 def rrt_apf_guided(
     start,
     goal,
@@ -190,9 +190,9 @@ def rrt_apf_guided(
     runtime = time.time() - start_time
     return None, nodes, parents, runtime
 
-# -------------------------
-# Path pruning
-# -------------------------
+                           
+              
+                           
 def prune_path(path, obstacles):
     if path is None:
         return None
@@ -208,9 +208,9 @@ def prune_path(path, obstacles):
         i = j
     return pruned
 
-# -------------------------
-# Environment
-# -------------------------
+                           
+             
+                           
 def create_random_spheres(num=6, bounds=((0,500),(0,500),(0,300)), rmin=20, rmax=60, seed=None):
     if seed is not None:
         random.seed(seed); np.random.seed(seed)
@@ -223,9 +223,9 @@ def create_random_spheres(num=6, bounds=((0,500),(0,500),(0,300)), rmin=20, rmax
         obstacles.append(((x,y,z), r))
     return obstacles
 
-# -------------------------
-# ROS EXPORT FUNCTIONS (NEW)
-# -------------------------
+                           
+                            
+                           
 def export_to_ros_yaml(path, obstacles, filename='path_for_ros.yaml'):
     """Export path and obstacles in ROS-compatible YAML format"""
     import yaml
@@ -288,9 +288,9 @@ def create_rviz_marker_file(obstacles, filename='obstacles.marker'):
         yaml.dump({'markers': markers}, f)
     print(f"Saved RViz markers to {filename}")
 
-# -------------------------
-# Main experiment (ENHANCED)
-# -------------------------
+                           
+                            
+                           
 def run_experiment(seed=1, show_plot=True, export_ros=True):
     random.seed(seed); np.random.seed(seed)
     bounds = ((0,500),(0,500),(0,300))
@@ -346,14 +346,14 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
         pruned_i = prune_path(path_i, obstacles)
         print(f"Improved: {len(nodes_i)} nodes, {path_length(path_i):.2f} mm")
 
-    # Print metrics
+                   
     print("\n--- Metrics ---")
     if path_b is not None:
         print(f"Baseline: {t_b:.3f}s, {len(nodes_b)} nodes, {path_length(pruned_b):.2f} mm")
     if path_i is not None:
         print(f"Improved: {t_i:.3f}s, {len(nodes_i)} nodes, {path_length(pruned_i):.2f} mm")
 
-    # Save CSV outputs
+                      
     out1 = "path_points_baseline.csv"
     out2 = "path_points_improved.csv"
     if path_b is not None:
@@ -363,7 +363,7 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
         np.savetxt(out2, np.array(path_i), delimiter=",", header="x,y,z", comments='')
         print(f"Saved improved to {out2}")
 
-    # ROS EXPORT (NEW)
+                      
     if export_ros:
         print("\n--- Exporting ROS-compatible files ---")
         if path_i is not None:
@@ -375,13 +375,13 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
         export_obstacles_csv(obstacles)
         create_rviz_marker_file(obstacles)
 
-    # Visualization
+                   
     if show_plot:
         fig = plt.figure(figsize=(15,7))
         ax1 = fig.add_subplot(121, projection='3d')
         ax2 = fig.add_subplot(122, projection='3d')
 
-        # Draw obstacles
+                        
         for (c,r) in obstacles:
             u = np.linspace(0, 2*np.pi, 24)
             v = np.linspace(0, np.pi, 12)
@@ -391,7 +391,7 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
             ax1.plot_surface(x, y, z, color='gray', alpha=0.25, linewidth=0)
             ax2.plot_surface(x, y, z, color='gray', alpha=0.25, linewidth=0)
 
-        # Baseline plot
+                       
         if path_b is not None:
             pb = np.array(path_b)
             ax1.plot(pb[:,0], pb[:,1], pb[:,2], '-r', linewidth=2, label='Path')
@@ -408,7 +408,7 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
         ax1.set_xlim(bounds[0]); ax1.set_ylim(bounds[1]); ax1.set_zlim(bounds[2])
         ax1.legend()
 
-        # Improved plot
+                       
         if path_i is not None:
             pi = np.array(path_i)
             ax2.plot(pi[:,0], pi[:,1], pi[:,2], '-b', linewidth=2, label='Path')
@@ -438,9 +438,9 @@ def run_experiment(seed=1, show_plot=True, export_ros=True):
         "goal": goal,
     }
 
-# -------------------------
-# Entry point
-# -------------------------
+                           
+             
+                           
 if __name__ == "__main__":
     print("=" * 60)
     print("APF-guided RRT Path Planning")

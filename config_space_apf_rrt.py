@@ -55,24 +55,24 @@ class ConfigSpaceAPF_RRT(Env):
 
         return self._env.goal_reached(q)
 
-    # ------------------------------------------------------------------
-    # Gymnasium API delegates
-    # ------------------------------------------------------------------
+                                                                        
+                             
+                                                                        
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         return self._env.reset(seed=seed, options=options)
 
-    def step(self, action: np.ndarray):  # type: ignore[override]
+    def step(self, action: np.ndarray):                          
         return self._env.step(action)
 
-    def render(self):  # pragma: no cover - passthrough
+    def render(self):                                  
         self._env.render()
 
-    def close(self):  # pragma: no cover - passthrough
+    def close(self):                                  
         self._env.close()
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+                                                                        
+             
+                                                                        
     @property
     def scenario(self) -> ScenarioConfig:
         return self._env.scenario
@@ -143,7 +143,7 @@ def evaluate_agent(
     return results
 
 
-if __name__ == "__main__":  # pragma: no cover - quick smoke test
+if __name__ == "__main__":                                       
     env = ConfigSpaceAPF_RRT()
     obs, _ = env.reset()
     total_reward = 0.0

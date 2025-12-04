@@ -52,17 +52,17 @@ class ObstacleTrajectoryDataset(Dataset):
         self.max_predict_step = max(self.predict_steps)
         self.samples: List[Tuple[np.ndarray, np.ndarray]] = []
 
-        # Process trajectories into training samples
+                                                    
         for traj in trajectories:
             if len(traj) < history_len + self.max_predict_step:
                 continue
 
             for i in range(len(traj) - history_len - self.max_predict_step + 1):
-                history = traj[i : i + history_len]  # (history_len, 7)
+                history = traj[i : i + history_len]                    
 
-                # Extract positions and velocities
-                hist_pos = history[:, 1:4]  # (history_len, 3) - x, y, z
-                hist_vel = history[:, 4:7]  # (history_len, 3) - vx, vy, vz
+                                                  
+                hist_pos = history[:, 1:4]                              
+                hist_vel = history[:, 4:7]                                 
 
                 future_positions: List[np.ndarray] = []
                 for step in self.predict_steps:
@@ -71,8 +71,8 @@ class ObstacleTrajectoryDataset(Dataset):
 
                 self.samples.append(
                     (
-                        np.hstack([hist_pos, hist_vel]),  # (history_len, 6)
-                        np.concatenate(future_positions, axis=0),  # (predict_steps * 3,)
+                        np.hstack([hist_pos, hist_vel]),                    
+                        np.concatenate(future_positions, axis=0),                        
                     )
                 )
     
@@ -83,7 +83,7 @@ class ObstacleTrajectoryDataset(Dataset):
         history, future = self.samples[idx]
         return (
             torch.FloatTensor(history),
-            torch.FloatTensor(future.reshape(-1))  # Flatten future positions
+            torch.FloatTensor(future.reshape(-1))                            
         )
 
 
@@ -105,7 +105,7 @@ class ObstaclePredictorLSTM(nn.Module):
         self.predict_steps: List[int] = _normalize_predict_steps(predict_steps)
         self.output_dim = output_dim
 
-        # LSTM layers
+                     
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
@@ -114,7 +114,7 @@ class ObstaclePredictorLSTM(nn.Module):
             dropout=0.2 if num_layers > 1 else 0,
         )
 
-        # Fully connected layers
+                                
         self.fc1 = nn.Linear(hidden_size, 128)
         self.fc2 = nn.Linear(128, 64)
         self.fc3 = nn.Linear(64, len(self.predict_steps) * output_dim)
@@ -129,13 +129,13 @@ class ObstaclePredictorLSTM(nn.Module):
         Returns:
             predictions: (batch, predict_steps * output_dim)
         """
-        # LSTM forward pass
+                           
         lstm_out, (h_n, c_n) = self.lstm(x)
         
-        # Use last hidden state
+                               
         last_hidden = lstm_out[:, -1, :]
         
-        # Fully connected layers
+                                
         out = self.relu(self.fc1(last_hidden))
         out = self.dropout(out)
         out = self.relu(self.fc2(out))
@@ -173,7 +173,7 @@ def generate_training_data(
         dt = 0.1
 
         if motion_type == "linear":
-            # Constant velocity motion
+                                      
             start_pos = np.random.uniform(-5, 5, 3)
             velocity = np.random.uniform(-0.5, 0.5, 3)
 
@@ -181,7 +181,7 @@ def generate_training_data(
             velocities = np.tile(velocity, (traj_length, 1))
 
         elif motion_type == "circular":
-            # Circular motion
+                             
             center = np.random.uniform(-3, 3, 3)
             radius = np.random.uniform(1, 3)
             angular_vel = np.random.uniform(0.1, 0.5)
@@ -196,7 +196,7 @@ def generate_training_data(
                 [-np.sin(theta), np.cos(theta), np.zeros_like(theta)]
             )
 
-        else:  # random walk
+        else:               
             start_pos = np.random.uniform(-5, 5, 3)
             velocities = np.random.normal(0, 0.3, (traj_length, 3))
             velocities = np.cumsum(velocities, axis=0) * 0.1
@@ -315,7 +315,7 @@ def train_predictor(
         train_loss /= max(len(train_loader), 1)
         train_losses.append(train_loss)
 
-        # Validation
+                    
         model.eval()
         val_loss = 0.0
         step_mae_sum = torch.zeros(len(model.predict_steps), device=device)
@@ -334,10 +334,10 @@ def train_predictor(
         mean_step_mae = (step_mae_sum / max(batches, 1)).tolist()
         val_mae_history.append([float(x) for x in mean_step_mae])
 
-        # Update learning rate
+                              
         scheduler.step(val_loss)
 
-        # Print progress
+                        
         step_mae_str = ", ".join(
             f"{step}-step MAE: {mae:.4f}" for step, mae in zip(model.predict_steps, mean_step_mae)
         )
@@ -346,14 +346,14 @@ def train_predictor(
             f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f} | {step_mae_str}"
         )
 
-        # Save best model
+                         
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             ckpt_path = checkpoint_dir / "obstacle_predictor_best.pth"
             torch.save(model.state_dict(), ckpt_path)
             print(f"  ✓ New best model saved to {ckpt_path}")
 
-        # Save latest checkpoint for quick recovery
+                                                   
         torch.save(model.state_dict(), checkpoint_dir / "obstacle_predictor_latest.pth")
 
         if metrics_path:
@@ -392,7 +392,7 @@ class ObstaclePredictor:
         self.predict_steps: List[int] = _normalize_predict_steps(predict_steps)
         self.device = device
 
-        # Load model
+                    
         self.model = ObstaclePredictorLSTM(
             input_size=6,
             hidden_size=128,
@@ -472,8 +472,8 @@ class DynamicObstacleManager:
         self.predictor = predictor
         self.prediction_horizon = prediction_horizon
 
-        # Obstacle tracking
-        self.obstacles = {}  # {id: {'history': [...], 'predicted': [...]}}
+                           
+        self.obstacles = {}                                                
         self.history_len = predictor.history_len
 
     def reset(self) -> None:
@@ -503,14 +503,14 @@ class DynamicObstacleManager:
             history = self.obstacles[obstacle_id]['history']
             history.append(state)
             
-            # Keep only recent history
+                                      
             if len(history) > self.history_len:
                 history = history[-self.history_len:]
             
             self.obstacles[obstacle_id]['history'] = history
             self.obstacles[obstacle_id]['last_update'] = timestamp
             
-            # Predict if we have enough history
+                                               
             if len(history) >= self.history_len:
                 predicted = self.predictor.predict(np.array(history[-self.history_len:]))
                 self.obstacles[obstacle_id]['predicted'] = predicted
@@ -568,7 +568,7 @@ class DynamicObstacleManager:
         if current_waypoint_idx >= len(planned_path):
             return False, "Path completed"
         
-        # Check upcoming waypoints against predicted obstacles
+                                                              
         look_ahead = min(self.prediction_horizon, 
                         len(planned_path) - current_waypoint_idx)
         
@@ -576,7 +576,7 @@ class DynamicObstacleManager:
             waypoint = planned_path[current_waypoint_idx + i]
             step = i + 1
             
-            # Check collision with predicted obstacle positions
+                                                               
             predicted_positions = self.get_all_predicted_positions(step)
             
             for obs_id, pred_pos in predicted_positions.items():
@@ -619,14 +619,14 @@ if __name__ == "__main__":
         print("Generating training data...")
         train_trajs, val_trajs = save_dataset('training_trajectories.pkl', args.n_train, args.n_val)
 
-        # Create datasets
+                         
         train_dataset = ObstacleTrajectoryDataset(train_trajs, predict_len=args.predict_steps)
         val_dataset = ObstacleTrajectoryDataset(val_trajs, predict_len=args.predict_steps)
 
         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
-        # Create and train model
+                                
         model = ObstaclePredictorLSTM(predict_steps=args.predict_steps)
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -641,22 +641,22 @@ if __name__ == "__main__":
 
         print("\n✓ Training complete! Checkpoints written to", args.checkpoint_dir)
 
-    else:  # test mode
+    else:             
         print("Testing obstacle predictor...")
 
-        # Create predictor
+                          
         checkpoint_dir = Path(args.checkpoint_dir)
         model_path = checkpoint_dir / 'obstacle_predictor_best.pth'
         if not model_path.exists():
             raise FileNotFoundError(f"Checkpoint {model_path} not found. Run with --mode train first.")
         predictor = ObstaclePredictor(model_path, predict_steps=args.predict_steps)
         
-        # Test with synthetic trajectory
+                                        
         print("\nGenerating test trajectory...")
         test_traj = generate_training_data(1, traj_length=30, 
                                           motion_types=['circular'])[0]
         
-        history = test_traj[:10, [1,2,3,4,5,6]]  # x,y,z,vx,vy,vz
+        history = test_traj[:10, [1,2,3,4,5,6]]                  
         ground_truth = np.vstack(
             [test_traj[10 + step - 1, 1:4] for step in sorted(args.predict_steps)]
         )
@@ -672,11 +672,11 @@ if __name__ == "__main__":
             error = np.linalg.norm(pred - gt)
             print(f"  Step +{step}: {pred} (GT: {gt}, Error: {error:.3f})")
         
-        # Test dynamic manager
+                              
         print("\n\nTesting Dynamic Obstacle Manager...")
         manager = DynamicObstacleManager(predictor)
         
-        # Simulate obstacle updates
+                                   
         for t in range(15):
             pos = test_traj[t, 1:4]
             vel = test_traj[t, 4:7]

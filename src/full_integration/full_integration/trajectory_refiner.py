@@ -43,7 +43,7 @@ class TrajectoryRefiner:
         points = np.array([p.positions for p in traj.points], dtype=float)
         points = _clamp_positions(points)
 
-        # Optional PPO/NN refinement
+                                    
         if model is not None:
             try:
                 import torch
@@ -56,7 +56,7 @@ class TrajectoryRefiner:
             except Exception:
                 pass
 
-        # Gradient-based smoothing with velocity enforcement
+                                                            
         for _ in range(self.smoothing_steps):
             grad = np.zeros_like(points)
             grad[1:-1] = 2 * points[1:-1] - points[:-2] - points[2:]

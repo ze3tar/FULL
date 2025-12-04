@@ -6,7 +6,7 @@ from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 from matplotlib import cm
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  Needed for projection registration
+from mpl_toolkits.mplot3d import Axes3D                                                  
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
 
@@ -100,7 +100,7 @@ def plot_obstacles_3d(obstacles: Sequence[object], ax: Axes3D) -> None:
         elif isinstance(obstacle, Mapping):
             centre = np.asarray(obstacle.get("centre", obstacle.get("center", (0, 0, 0))), dtype=np.float64)[:3]
             if obstacle.get("type") == "rectangle":
-                dims = tuple(obstacle.get("dims", obstacle.get("size", (1.0, 1.0, 1.0))))  # type: ignore[arg-type]
+                dims = tuple(obstacle.get("dims", obstacle.get("size", (1.0, 1.0, 1.0))))                          
             else:
                 radius = float(obstacle.get("radius", 0.5))
         if centre is None:
@@ -136,7 +136,7 @@ def plot_path_3d(path: Sequence[np.ndarray], ax: Axes3D) -> None:
         return
 
     diffs = np.diff(coords, axis=0)
-    # Curvature approximation using discrete second derivative
+                                                              
     curvatures = np.zeros(len(coords))
     if len(coords) > 2:
         for i in range(1, len(coords) - 1):

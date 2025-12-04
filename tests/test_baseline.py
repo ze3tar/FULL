@@ -1,23 +1,23 @@
 import random
 import unittest
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     import numpy as np
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    np = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    np = None                
     _NUMPY_ERROR = exc
 else:
     _NUMPY_ERROR = None
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     from baseline_enhanced import (
         create_random_spheres,
         prune_path,
         rrt_apf_guided,
         rrt_basic,
     )
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    create_random_spheres = prune_path = rrt_apf_guided = rrt_basic = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    create_random_spheres = prune_path = rrt_apf_guided = rrt_basic = None                
     _BASELINE_ERROR = exc
 else:
     _BASELINE_ERROR = None
@@ -52,7 +52,7 @@ class BaselinePlannerTests(unittest.TestCase):
         self.assertGreater(len(nodes), 0)
         self.assertIsInstance(runtime, float)
         self.assertIn(0, parents)
-        # Path may be None depending on randomness, but prune_path should handle it
+                                                                                   
         pruned = prune_path(path, self.obstacles)
         if path is None:
             self.assertIsNone(pruned)

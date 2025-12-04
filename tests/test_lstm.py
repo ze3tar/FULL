@@ -1,25 +1,25 @@
 import unittest
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     import numpy as np
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    np = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    np = None                
     _NUMPY_ERROR = exc
 else:
     _NUMPY_ERROR = None
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     import torch
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    torch = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    torch = None                
     _TORCH_ERROR = exc
 else:
     _TORCH_ERROR = None
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     from obstacle_predictor import ObstaclePredictorLSTM, ObstacleTrajectoryDataset
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    ObstaclePredictorLSTM = ObstacleTrajectoryDataset = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    ObstaclePredictorLSTM = ObstacleTrajectoryDataset = None                
     _PREDICTOR_ERROR = exc
 else:
     _PREDICTOR_ERROR = None

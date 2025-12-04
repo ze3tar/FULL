@@ -24,7 +24,7 @@ class PathPublisher(Node):
         try:
             with open(self.csv_path, 'r') as f:
                 reader = csv.reader(f)
-                header = next(reader)  # skip x,y,z
+                header = next(reader)              
 
                 for row in reader:
                     x, y, z = map(float, row)

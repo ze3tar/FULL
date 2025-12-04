@@ -47,9 +47,9 @@ class DynamicEnvironmentSimulator:
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
-    # ------------------------------------------------------------------
-    # Obstacle creation helpers
-    # ------------------------------------------------------------------
+                                                                        
+                               
+                                                                        
     def add_random_spheres(
         self,
         count: int = 5,
@@ -96,9 +96,9 @@ class DynamicEnvironmentSimulator:
             )
         )
 
-    # ------------------------------------------------------------------
-    # Runtime management
-    # ------------------------------------------------------------------
+                                                                        
+                        
+                                                                        
     def subscribe(self, callback: Callable[[Sequence[ObstacleState]], None]) -> None:
         """Register a callback that receives obstacle snapshots."""
 
@@ -135,9 +135,9 @@ class DynamicEnvironmentSimulator:
             elapsed = time.time() - now
             time.sleep(max(0.0, period - elapsed))
 
-    # ------------------------------------------------------------------
-    # Physics
-    # ------------------------------------------------------------------
+                                                                        
+             
+                                                                        
     def _step(self, dt: float) -> None:
         for obs in self.obstacles:
             obs.velocity += obs.acceleration * dt
@@ -169,9 +169,9 @@ class DynamicEnvironmentSimulator:
                     obs_b.position += normal * overlap / 2
                     obs_a.velocity, obs_b.velocity = obs_b.velocity.copy(), obs_a.velocity.copy()
 
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
+                                                                        
+               
+                                                                        
     def capture_snapshot(self) -> List[ObstacleState]:
         with self._lock:
             return [obs.copy() for obs in self.obstacles]

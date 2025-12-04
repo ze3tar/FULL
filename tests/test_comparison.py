@@ -1,19 +1,19 @@
 import unittest
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     import numpy as np
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    np = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    np = None                
     _NUMPY_ERROR = exc
 else:
     _NUMPY_ERROR = None
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     from baseline_enhanced import path_length
     from comprehensive_comparison import PlanningBenchmark
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    path_length = None  # type: ignore
-    PlanningBenchmark = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    path_length = None                
+    PlanningBenchmark = None                
     _COMPARISON_ERROR = exc
 else:
     _COMPARISON_ERROR = None

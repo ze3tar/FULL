@@ -36,10 +36,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
-try:  # pragma: no cover - optional dependency guard
-    import tensorflow as tf  # type: ignore
-except Exception:  # pragma: no cover - TensorFlow is optional
-    tf = None  # type: ignore
+try:                                                
+    import tensorflow as tf                
+except Exception:                                             
+    tf = None                
 
 import numpy as np
 import pandas as pd
@@ -53,18 +53,18 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNorm
 from baseline_enhanced import create_random_spheres, path_length, prune_path, rrt_apf_guided
 from path_exporter import export_path
 
-# Matplotlib is an optional dependency; importing lazily keeps the module usable
-# without it (e.g. on headless Colab runtimes before ``pip install matplotlib``).
-try:  # pragma: no cover - optional dependency
+                                                                                
+                                                                                 
+try:                                          
     import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D projection)
-except Exception:  # pragma: no cover - optional dependency
+    from mpl_toolkits.mplot3d import Axes3D                                         
+except Exception:                                          
     plt = None
 
 
-# ---------------------------------------------------------------------------
-# Success criterion
-# ---------------------------------------------------------------------------
+                                                                             
+                   
+                                                                             
 
 DEFAULT_GOAL_TOLERANCE = 0.2
 
@@ -75,9 +75,9 @@ def is_success(ee_pos: np.ndarray, goal_pos: np.ndarray, threshold: float = DEFA
     return np.linalg.norm(ee_pos - goal_pos) < threshold
 
 
-# ---------------------------------------------------------------------------
-# Configuration dataclasses
-# ---------------------------------------------------------------------------
+                                                                             
+                           
+                                                                             
 
 @dataclass
 class PlannerParameters:
@@ -100,14 +100,14 @@ class PlannerParameters:
     step_range: Tuple[float, float] = (0.1, 1.2)
     goal_bias_range: Tuple[float, float] = (0.0, 0.4)
 
-    # ------------------------------------------------------------------
-    # Legacy compatibility aliases
-    # ------------------------------------------------------------------
-    # Older evaluation scripts (e.g. ``benshmraketable.py``) expect
-    # ``PlannerParameters`` to expose ``K_att``, ``K_rep`` and ``d0`` fields
-    # matching the attractive gain, repulsive gain and influence distance.
-    # Providing property aliases keeps those scripts working while the
-    # underlying names remain descriptive for the RL components.
+                                                                        
+                                  
+                                                                        
+                                                                   
+                                                                            
+                                                                          
+                                                                      
+                                                                
 
     @property
     def K_att(self) -> float:
@@ -166,12 +166,12 @@ class PlannerParameters:
 class ScenarioConfig:
     """Random scenario generator options."""
 
-    difficulty: str = "medium"  # easy / medium / hard
+    difficulty: str = "medium"                        
     max_steps: int = 128
     joint_min: float = -math.pi
     joint_max: float = math.pi
     n_joints: int = 6
-    # Shared across training and evaluation; matches ROS launch default goal_radius.
+                                                                                    
     goal_tolerance: float = DEFAULT_GOAL_TOLERANCE
     dynamic_probability: float = 0.45
     obstacle_speed_range: Tuple[float, float] = (0.05, 0.35)
@@ -235,9 +235,9 @@ class PlannerResult:
     collision: bool = False
 
 
-# ---------------------------------------------------------------------------
-# Incremental RRT planner
-# ---------------------------------------------------------------------------
+                                                                             
+                         
+                                                                             
 
 
 class RRTPlanner:
@@ -276,11 +276,11 @@ class RRTPlanner:
         return self.env._in_collision(q_new)
 
     def incremental_step(self) -> Tuple[np.ndarray, bool, bool, Optional[List[np.ndarray]]]:
-        # sample one point
+                          
         q_rand = self.sample()
-        # find nearest
+                      
         idx_near, q_near = self.nearest(q_rand)
-        # steer
+               
         direction = self.env._compute_direction(q_near, q_rand)
         step = min(self.env.parameters.step_size, np.linalg.norm(q_rand - q_near))
         q_new = np.clip(
@@ -288,10 +288,10 @@ class RRTPlanner:
             self.env.scenario.joint_min,
             self.env.scenario.joint_max,
         )
-        # check collision
+                         
         if self.in_collision(q_new):
             return q_near, True, False, None
-        # add node
+                  
         self.tree.append(q_new)
         self.parents[len(self.tree) - 1] = idx_near
         path: Optional[List[np.ndarray]] = None
@@ -301,13 +301,13 @@ class RRTPlanner:
         return q_new, False, reached, path
 
 
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
+                                                                             
+             
+                                                                             
 
 Obstacle = ObstacleState
 
-if TYPE_CHECKING:  # pragma: no cover - optional dependency
+if TYPE_CHECKING:                                          
     from obstacle_predictor import DynamicObstacleManager
 
 
@@ -339,8 +339,8 @@ class APFRRTEnv(Env):
             int(max_iterations) if max_iterations is not None else int(self.scenario.max_steps)
         )
 
-        # Observation encodes planner state + tunables so PPO can correlate them
-        # with progress: distance, heading, obstacle info, parameter vector.
+                                                                                
+                                                                            
         low = np.array(
             [0.0, -1.0, 0.0, 0.0] + [p[0] for p in self._parameter_bounds()],
             dtype=np.float32,
@@ -351,7 +351,7 @@ class APFRRTEnv(Env):
         )
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
-        # Action is applied as small parameter deltas.
+                                                      
         self.action_space = spaces.Box(
             low=np.array([-0.4, -0.4, -0.5, -0.25, -0.15], dtype=np.float32),
             high=np.array([0.4, 0.4, 0.5, 0.25, 0.15], dtype=np.float32),
@@ -375,7 +375,7 @@ class APFRRTEnv(Env):
 
         self.reset()
 
-    # -- Env API -----------------------------------------------------------
+                                                                            
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
         if seed is not None:
@@ -429,13 +429,13 @@ class APFRRTEnv(Env):
 
         return obs, float(reward), bool(done), bool(truncated), info
 
-    def render(self):  # pragma: no cover - simple debug rendering
+    def render(self):                                             
         print(
             f"Step {self._step_index} – dist_to_goal: {self._distance_to_goal(self.q_current):.3f} "
             f"nodes: {len(self.nodes)}"
         )
 
-    # -- Planning utilities ------------------------------------------------
+                                                                            
     def _apply_action_parameters(self, action: np.ndarray) -> None:
         self.parameters.apply_delta(action)
 
@@ -479,11 +479,11 @@ class APFRRTEnv(Env):
 
     def _incremental_planner_step(self, action: np.ndarray):
         previous_q = self.q_current.copy()
-        # apply APF + RRT parameters from the action
+                                                    
         self._apply_action_parameters(action)
-        # perform ONE incremental RRT node expansion
+                                                    
         q_new, collided, reached, path = self.planner.incremental_step()
-        # compute movement metrics
+                                  
         movement_vec = q_new - previous_q
         movement = float(np.linalg.norm(movement_vec))
         motion_dir = movement_vec / (movement + 1e-9)
@@ -493,15 +493,15 @@ class APFRRTEnv(Env):
             self._stuck_steps += 1
         else:
             self._stuck_steps = 0
-        # update internal state
+                               
         self.current_node = q_new
         self.q_current = q_new.copy()
-        # compute distances and progress
+                                        
         dist = self._distance_to_goal(q_new)
         progress = self.prev_dist_to_goal - dist
-        # compute collisions
+                            
         collided = collided or self._check_collision(q_new)
-        # check success
+                       
         if reached and path is not None:
             self._last_path = path
         else:
@@ -572,7 +572,7 @@ class APFRRTEnv(Env):
         towards_goal = self.q_goal - q_near
 
         apf_component = total_force / (np.linalg.norm(total_force) + 1e-9)
-        apf_component *= 0.5  # damp APF so RRT steering remains dominant
+        apf_component *= 0.5                                             
 
         components = np.stack(
             [
@@ -644,7 +644,7 @@ class APFRRTEnv(Env):
 
         return self._distance_to_goal(q) <= self.scenario.goal_tolerance
 
-    # NOTE: only used for evaluation, never for RL training
+                                                           
     def _run_planning_episode(self) -> PlanResult:
         self.planner.reset(self.q_start, self.q_goal)
         self.nodes = self.planner.tree
@@ -740,9 +740,9 @@ class APFRRTEnv(Env):
         return np.concatenate([normalised, self.parameters.to_array()])
 
 
-# ---------------------------------------------------------------------------
-# Callbacks & helpers
-# ---------------------------------------------------------------------------
+                                                                             
+                     
+                                                                             
 
 
 class ObservationNormalizer:
@@ -830,9 +830,9 @@ class SuccessRateCallback(BaseCallback):
         return True
 
 
-# ---------------------------------------------------------------------------
-# Benchmark helpers
-# ---------------------------------------------------------------------------
+                                                                             
+                   
+                                                                             
 
 
 @dataclass
@@ -859,9 +859,9 @@ class BenchmarkMetrics:
         }
 
 
-# ---------------------------------------------------------------------------
-# Training / evaluation entry points
-# ---------------------------------------------------------------------------
+                                                                             
+                                    
+                                                                             
 
 
 def make_vec_env(
@@ -1104,9 +1104,9 @@ def benchmark_agent(
     )
 
 
-# ---------------------------------------------------------------------------
-# Planner using a trained agent
-# ---------------------------------------------------------------------------
+                                                                             
+                               
+                                                                             
 
 
 class RLEnhancedPlanner:
@@ -1538,9 +1538,9 @@ def plan_with_rl_for_benchmark(
     )
 
 
-# ---------------------------------------------------------------------------
-# Baseline vs RL comparison helpers (migrated from benshmraketable.py)
-# ---------------------------------------------------------------------------
+                                                                             
+                                                                      
+                                                                             
 
 
 def _safe_mean(values: Sequence[Optional[float]]) -> Optional[float]:
@@ -1890,9 +1890,9 @@ def benchmark_baseline_vs_rl(
     return {"summary": summary_df, "trials": pd.DataFrame(per_trial_rows)}
 
 
-# ---------------------------------------------------------------------------
-# Backwards compatibility aliases
-# ---------------------------------------------------------------------------
+                                                                             
+                                 
+                                                                             
 
 
 class RLEnhancedAPF_RRT(RLEnhancedPlanner):
@@ -1903,9 +1903,9 @@ class APF_RRT_Environment(APFRRTEnv):
     """Compatibility wrapper used by older quick-test scripts."""
 
 
-# ---------------------------------------------------------------------------
-# Visualisation utilities
-# ---------------------------------------------------------------------------
+                                                                             
+                         
+                                                                             
 
 
 def plot_3d_path(
@@ -1992,9 +1992,9 @@ def plot_3d_path(
         plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+                                                                             
+     
+                                                                             
 
 
 def _parse_args() -> argparse.Namespace:
@@ -2279,17 +2279,17 @@ def main() -> None:
                 from ros_moveit_bridge import APFRRT_ROSBridge
 
                 ros_bridge = APFRRT_ROSBridge()
-            except Exception as exc:  # pragma: no cover - ROS optional
+            except Exception as exc:                                   
                 print(f"Failed to initialise ROS bridge: {exc}")
         if ros_bridge and getattr(args, "ros_publish", False):
             try:
                 ros_bridge.publish_path(path_points)
-            except Exception as exc:  # pragma: no cover - ROS optional
+            except Exception as exc:                                   
                 print(f"Failed to publish path to ROS: {exc}")
         if ros_bridge and getattr(args, "moveit_execute", False):
             try:
                 ros_bridge.send_to_moveit(path_points)
-            except Exception as exc:  # pragma: no cover - ROS optional
+            except Exception as exc:                                   
                 print(f"Failed to execute path in MoveIt: {exc}")
         plot_requested = bool(getattr(args, "plot_3d", False) or getattr(args, "plot", False))
         if plot_requested:
@@ -2347,7 +2347,7 @@ def main() -> None:
                 show_obstacles=bool(getattr(args, "show_obstacles", True)),
                 show_apf=bool(getattr(args, "show_apf", False)),
                 apf_fn=_apf_field,
-                apf_domain=domain,  # type: ignore[arg-type]
+                apf_domain=domain,                          
                 use_contours=True,
                 show=True,
                 save_path=getattr(args, "save_fig", None),
