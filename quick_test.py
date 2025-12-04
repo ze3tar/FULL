@@ -88,7 +88,6 @@ def test_pso():
     
     print("  Testing PSO smoother with synthetic path...")
     
-    # Create simple test path
     t = np.linspace(0, 1, 5)
     test_path = np.column_stack([t, t**2, np.sin(2*np.pi*t)])
     
@@ -162,7 +161,7 @@ def test_comparison_framework():
         from comprehensive_comparison import PlanningBenchmark, create_test_scenarios
         
         print("  Creating test scenarios...")
-        scenarios = create_test_scenarios()[:1]  # Just one scenario for quick test
+        scenarios = create_test_scenarios()[:1]
         
         print("  Running mini benchmark (1 trial)...")
         benchmark = PlanningBenchmark()
@@ -194,7 +193,7 @@ def check_gpu():
         return True
     else:
         print(f"  ℹ No GPU detected (CPU training will be slower)")
-        return True  # Not a failure, just slower
+        return True                              
 
 def generate_quick_demo():
     """Generate a quick demonstration"""
@@ -240,64 +239,56 @@ def main():
         else:
             print("\nNon-interactive environment detected. Beginning tests automatically...")
     
-    # Track results
     results = {}
-    
-    # Test 1: Dependencies
+
     print_header("Test 1/7: Python Dependencies")
     results['dependencies'] = test_component(
         "Package Dependencies",
         test_dependencies
     )
-    
+
     if not results['dependencies']:
         print("\n⚠️  Please install missing packages before continuing.")
         print("   pip install numpy matplotlib torch gymnasium stable-baselines3 pandas")
         return
-    
-    # Test 2: Baseline
+
     print_header("Test 2/7: Baseline APF-RRT")
     results['baseline'] = test_component(
         "Baseline APF-RRT Planner",
         test_baseline
     )
-    
-    # Test 3: PSO
+
     print_header("Test 3/7: PSO Path Smoother")
     results['pso'] = test_component(
         "PSO Path Smoother",
         test_pso
     )
-    
-    # Test 4: RL Setup
+
     print_header("Test 4/7: RL Environment")
     results['rl'] = test_component(
         "RL Training Environment",
         test_rl_setup
     )
-    
-    # Test 5: LSTM Setup
+
     print_header("Test 5/7: LSTM Predictor")
     results['lstm'] = test_component(
         "LSTM Obstacle Predictor",
         test_lstm_setup
     )
-    
-    # Test 6: Comparison Framework
+
     print_header("Test 6/7: Comparison Framework")
     results['comparison'] = test_component(
         "Benchmarking Framework",
         test_comparison_framework
     )
-    
-    # Test 7: GPU Check
+
     print_header("Test 7/7: Hardware Check")
     results['gpu'] = test_component(
         "GPU Availability",
         check_gpu
     )
     
-    # Summary
+             
     print_header("TEST SUMMARY")
     
     passed = sum(results.values())

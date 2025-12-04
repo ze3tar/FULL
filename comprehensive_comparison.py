@@ -11,7 +11,7 @@ import json
 
 try:
     import numpy as np
-except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+except ModuleNotFoundError as exc:                                    
     raise ModuleNotFoundError(
         "NumPy is required for benchmarking. Install it with `pip install numpy` "
         "or run the notebook setup cell in Colab."
@@ -19,7 +19,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
 
 try:
     import pandas as pd
-except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+except ModuleNotFoundError as exc:                                    
     raise ModuleNotFoundError(
         "Pandas is required for benchmarking. Install it with `pip install pandas` "
         "or run the notebook setup cell in Colab."
@@ -28,13 +28,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
 try:
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d import Axes3D
-except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
+except ModuleNotFoundError as exc:                                    
     raise ModuleNotFoundError(
         "Matplotlib is required for plotting benchmark results. Install it with "
         "`pip install matplotlib`."
     ) from exc
 
-# Import all planners
+                     
 from baseline_enhanced import (
     GOAL_TOLERANCE_MM,
     create_random_spheres,
@@ -111,7 +111,7 @@ class PlanningBenchmark:
             goal = scenario['goal']
             obstacles = scenario['obstacles']
             
-            # Test each algorithm
+                                 
             algorithms = [
                 ('Basic RRT', self._run_basic_rrt),
                 ('APF-RRT (Baseline)', self._run_apf_rrt),
@@ -135,7 +135,7 @@ class PlanningBenchmark:
                     result['trial'] = trial
                     result['pso_applied'] = False
                     
-                    # Apply PSO if path found and enabled
+                                                         
                     if result['success'] and pso_smoother and use_pso:
                         result_pso = self._apply_pso_smoothing(
                             result, obstacles, pso_smoother
@@ -149,7 +149,7 @@ class PlanningBenchmark:
                     if verbose and (trial + 1) % max(1, n_trials//5) == 0:
                         print(f"  Trial {trial + 1}/{n_trials} complete")
         
-        # Convert to DataFrame
+                              
         results_df = pd.DataFrame(self.results)
         
         if verbose:
@@ -222,12 +222,12 @@ class PlanningBenchmark:
     def _run_prediction_apf_rrt(self, start, goal, obstacles, bounds):
         """APF-RRT that inflates obstacles using simple prediction heuristics."""
 
-        # If prediction stack is missing, fall back to baseline behaviour
+                                                                         
         if not PREDICTOR_AVAILABLE:
             return self._run_apf_rrt(start, goal, obstacles, bounds)
 
         inflated_obstacles = []
-        inflation_factor = 1.12  # modest buffer to mimic predicted motion envelope
+        inflation_factor = 1.12                                                    
         for centre, radius in obstacles:
             inflated_obstacles.append((centre, radius * inflation_factor))
 
@@ -236,7 +236,7 @@ class PlanningBenchmark:
     def _run_rl_apf_rrt(self, start, goal, obstacles, bounds):
         """Run RL-enhanced APF-RRT benchmark with proper agent loading."""
 
-        # RL planner unavailable -> mark as failure immediately
+                                                               
         if not RL_AVAILABLE:
             return {
                 'success': False,
@@ -249,19 +249,19 @@ class PlanningBenchmark:
                 'K_rep_final': np.nan,
             }
 
-        import math  # local import to avoid circular dependency
+        import math                                             
         from rl_enhanced_apf_rrt import load_agent, ScenarioConfig, RLEnhancedAPF_RRT
 
-        # Attempt to load a trained agent and observation normaliser.  We try
-        # multiple default filenames (final_model.zip, best_model.zip) under
-        # the ``models`` directory.  If none are found or loading fails
-        # completely, treat this run as a failure.
+                                                                             
+                                                                            
+                                                                       
+                                                  
         model_dir = Path('models')
         candidate_models = [
             model_dir / 'final_model.zip',
             model_dir / 'best_model.zip',
             model_dir / 'best_model' / 'best_model.zip',
-            # Handle accidental double-extension e.g. best_model.zip.zip
+                                                                        
             model_dir / 'best_model.zip.zip',
         ]
 
@@ -276,7 +276,7 @@ class PlanningBenchmark:
                 agent = None
                 normaliser = None
 
-        # If the agent failed to load, return failure
+                                                     
         if agent is None:
             return {
                 'success': False,
@@ -289,11 +289,11 @@ class PlanningBenchmark:
                 'K_rep_final': np.nan,
             }
 
-        # Convert start and goal coordinates from workspace (0–100) into
-        # normalised joint space.  The RL environment expects joint values in
-        # the range [joint_min, joint_max] which defaults to [−π, π].  We map
-        # 0 → joint_min and 100 → joint_max linearly.  Pad to the required
-        # number of joints (6) with zeros when necessary.
+                                                                        
+                                                                             
+                                                                             
+                                                                          
+                                                         
         start_arr = np.asarray(start, dtype=float)
         goal_arr = np.asarray(goal, dtype=float)
 
@@ -304,9 +304,9 @@ class PlanningBenchmark:
         def pad_and_map_to_joint_space(vec: np.ndarray, dim: int = DESIRED_DIM) -> np.ndarray:
             """Map a 3D workspace vector (0–100) into joint space and pad to dim."""
 
-            # Linear mapping into [joint_min, joint_max]
+                                                        
             mapped = (vec / 100.0) * (joint_max - joint_min) + joint_min
-            # Pad with zeros if needed
+                                      
             if mapped.size < dim:
                 mapped = np.concatenate([mapped, np.zeros(dim - mapped.size, dtype=float)])
             else:
@@ -316,18 +316,18 @@ class PlanningBenchmark:
         q_start = pad_and_map_to_joint_space(start_arr)
         q_goal = pad_and_map_to_joint_space(goal_arr)
 
-        # Map obstacles into joint space.  We linearly map obstacle centres
-        # into [joint_min, joint_max] and scale radii from workspace units
-        # (0–100) into the same range by normalising by the workspace size.
+                                                                           
+                                                                          
+                                                                           
         q_obstacles = []
         scale = (joint_max - joint_min) / 100.0
         for centre, radius in obstacles:
             centre_arr = pad_and_map_to_joint_space(np.asarray(centre, dtype=float))
             q_obstacles.append((centre_arr, float(radius) * scale))
 
-        # Construct a static scenario matching the joint dimensionality.  We set
-        # dynamic_probability=0 to disable moving obstacles and leave other
-        # parameters at their defaults.
+                                                                                
+                                                                           
+                                       
         scenario = ScenarioConfig(
             n_joints=DESIRED_DIM,
             joint_min=joint_min,
@@ -335,7 +335,7 @@ class PlanningBenchmark:
             dynamic_probability=0.0,
         )
 
-        # Instantiate the RL planner with the loaded agent and normaliser
+                                                                         
         planner = RLEnhancedAPF_RRT(agent=agent, scenario=scenario, normalizer=normaliser)
 
         try:
@@ -343,7 +343,7 @@ class PlanningBenchmark:
                 q_start, q_goal, q_obstacles, max_iters=8000
             )
         except Exception:
-            # Propagate any exception as a failed trial
+                                                       
             return {
                 'success': False,
                 'planning_time': float('nan'),
@@ -365,9 +365,9 @@ class PlanningBenchmark:
         plan_time = float(info.get('planning_time', float('nan')))
         metrics = info.get('metrics', {})
 
-        # Convert the path and nodes back into workspace coordinates (0–100)
-        # using the inverse of the linear mapping.  Only the first three
-        # dimensions are used for path length computation and visualisation.
+                                                                            
+                                                                        
+                                                                            
         def map_to_workspace(vec: np.ndarray) -> np.ndarray:
             return ((vec - joint_min) / (joint_max - joint_min)) * 100.0
 
@@ -419,7 +419,7 @@ class PlanningBenchmark:
         print("\nSummary Statistics:")
         print("-" * 70)
         
-        # Group by algorithm
+                            
         grouped = results_df.groupby('algorithm')
         
         for algo_name, group in grouped:
@@ -444,11 +444,11 @@ class PlanningBenchmark:
         filename = Path(filename)
         filename.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert to serializable format
+                                        
         serializable_results = []
         for result in self.results:
             r = result.copy()
-            # Convert arrays to lists
+                                     
             if 'path' in r and r['path'] is not None:
                 r['path'] = [p.tolist() if isinstance(p, np.ndarray) else p
                            for p in r['path']]
@@ -469,10 +469,10 @@ class PlanningBenchmark:
 
         fig = plt.figure(figsize=(18, 10))
         
-        # Filter successful trials
+                                  
         success_df = results_df[results_df['success']]
         
-        # 1. Planning Time Comparison
+                                     
         ax1 = fig.add_subplot(2, 3, 1)
         success_df.boxplot(column='planning_time', by='algorithm', ax=ax1)
         ax1.set_title('Planning Time Comparison')
@@ -481,7 +481,7 @@ class PlanningBenchmark:
         plt.sca(ax1)
         plt.xticks(rotation=45, ha='right')
         
-        # 2. Nodes Explored
+                           
         ax2 = fig.add_subplot(2, 3, 2)
         success_df.boxplot(column='nodes_explored', by='algorithm', ax=ax2)
         ax2.set_title('Nodes Explored')
@@ -490,7 +490,7 @@ class PlanningBenchmark:
         plt.sca(ax2)
         plt.xticks(rotation=45, ha='right')
         
-        # 3. Path Length
+                        
         ax3 = fig.add_subplot(2, 3, 3)
         success_df.boxplot(column='path_length', by='algorithm', ax=ax3)
         ax3.set_title('Path Length')
@@ -499,7 +499,7 @@ class PlanningBenchmark:
         plt.sca(ax3)
         plt.xticks(rotation=45, ha='right')
         
-        # 4. Success Rate by Scenario
+                                     
         ax4 = fig.add_subplot(2, 3, 4)
         success_rate = results_df.groupby(['algorithm', 'scenario'])['success'].mean() * 100
         success_rate.unstack().plot(kind='bar', ax=ax4)
@@ -509,7 +509,7 @@ class PlanningBenchmark:
         ax4.legend(title='Scenario')
         plt.xticks(rotation=45, ha='right')
         
-        # 5. Efficiency Metrics
+                               
         ax5 = fig.add_subplot(2, 3, 5)
         efficiency = success_df.groupby('algorithm').agg({
             'planning_time': 'mean',
@@ -524,9 +524,9 @@ class PlanningBenchmark:
         ax5.legend(['Time', 'Nodes', 'Length'])
         plt.xticks(rotation=45, ha='right')
         
-        # 6. Overall Performance Score
+                                      
         ax6 = fig.add_subplot(2, 3, 6)
-        # Lower is better for all metrics, so invert
+                                                    
         performance_score = (
             1.0 / success_df.groupby('algorithm')['planning_time'].mean() +
             1.0 / success_df.groupby('algorithm')['nodes_explored'].mean() +
@@ -549,7 +549,7 @@ def create_test_scenarios():
     """Create test scenarios with varying difficulty"""
     scenarios = []
     
-    # Scenario 1: Simple
+                        
     scenarios.append({
         'name': 'Simple',
         'start': (30.0, 30.0, 40.0),
@@ -557,7 +557,7 @@ def create_test_scenarios():
         'obstacles': create_random_spheres(num=3, rmin=30, rmax=50, seed=1)
     })
     
-    # Scenario 2: Medium
+                        
     scenarios.append({
         'name': 'Medium',
         'start': (50.0, 50.0, 50.0),
@@ -565,7 +565,7 @@ def create_test_scenarios():
         'obstacles': create_random_spheres(num=5, rmin=25, rmax=60, seed=2)
     })
     
-    # Scenario 3: Complex
+                         
     scenarios.append({
         'name': 'Complex',
         'start': (30.0, 30.0, 30.0),
@@ -573,13 +573,13 @@ def create_test_scenarios():
         'obstacles': create_random_spheres(num=7, rmin=30, rmax=70, seed=3)
     })
     
-    # Scenario 4: Narrow passage
+                                
     scenarios.append({
         'name': 'Narrow',
         'start': (50.0, 50.0, 50.0),
         'goal': (450.0, 450.0, 250.0),
         'obstacles': [
-            # Create a narrow passage
+                                     
             ((200.0, 200.0, 150.0), 80.0),
             ((300.0, 300.0, 150.0), 80.0),
             ((250.0, 150.0, 150.0), 60.0),
@@ -614,10 +614,10 @@ def main():
     print(f"PSO available: {PSO_AVAILABLE}")
     print("="*70)
     
-    # Create scenarios
+                      
     scenarios = create_test_scenarios()
     
-    # Run benchmark
+                   
     benchmark = PlanningBenchmark()
     results_df = benchmark.run_comparison(
         scenarios, 
@@ -626,7 +626,7 @@ def main():
         verbose=True
     )
     
-    # Save results
+                  
     save_base = Path(args.save)
     save_base.parent.mkdir(parents=True, exist_ok=True)
 
@@ -634,7 +634,7 @@ def main():
     results_df.to_csv(save_base.with_suffix('.csv'), index=False)
     print(f"Results saved to {save_base.with_suffix('.csv')}")
 
-    # Create plots
+                  
     benchmark.plot_comparison(results_df, save_base.with_name(save_base.name + '_plots.png'))
     
     print("\n✓ Benchmark complete!")

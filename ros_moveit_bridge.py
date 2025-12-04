@@ -14,7 +14,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 class CartesianToMoveItBridge:
     def __init__(self):
-        # Initialize MoveIt
+                           
         moveit_commander.roscpp_initialize([])
         rospy.init_node('apf_rrt_moveit_bridge', anonymous=True)
         
@@ -22,7 +22,7 @@ class CartesianToMoveItBridge:
         self.scene = moveit_commander.PlanningSceneInterface()
         self.group = moveit_commander.MoveGroupCommander("manipulator")
         
-        # Set planner parameters
+                                
         self.group.set_planning_time(5.0)
         self.group.set_num_planning_attempts(10)
         
@@ -39,32 +39,32 @@ class CartesianToMoveItBridge:
         joint_trajectory = []
         
         for i, waypoint in enumerate(cartesian_waypoints):
-            # Create pose for this waypoint
+                                           
             target_pose = Pose()
-            target_pose.position.x = waypoint[0] / 1000.0  # Convert mm to m
+            target_pose.position.x = waypoint[0] / 1000.0                   
             target_pose.position.y = waypoint[1] / 1000.0
             target_pose.position.z = waypoint[2] / 1000.0
             
-            # Set orientation (you may need to adjust this)
+                                                           
             target_pose.orientation.w = 1.0
             
-            # Compute IK for this pose
+                                      
             self.group.set_pose_target(target_pose)
             
-            # Get joint values
+                              
             joint_values = self.group.get_current_joint_values()
             
-            # Try to plan to this pose
+                                      
             plan = self.group.plan()
             
-            if isinstance(plan, tuple):  # MoveIt 1.0+
+            if isinstance(plan, tuple):               
                 success, trajectory, planning_time, error_code = plan
-            else:  # Older MoveIt
+            else:                
                 success = (plan.joint_trajectory.points != [])
                 trajectory = plan
             
             if success:
-                # Extract joint positions from trajectory
+                                                         
                 if trajectory.joint_trajectory.points:
                     joint_values = trajectory.joint_trajectory.points[-1].positions
                     joint_trajectory.append(joint_values)
@@ -84,22 +84,22 @@ class CartesianToMoveItBridge:
         Args:
             csv_file_path: Path to path_points_improved.csv
         """
-        # Load waypoints
+                        
         waypoints = np.loadtxt(csv_file_path, delimiter=',', skiprows=1)
         
         rospy.loginfo(f"Loaded {len(waypoints)} waypoints from APF-RRT planner")
         
-        # Convert to joint space
+                                
         joint_trajectory = self.cartesian_path_to_joints(waypoints)
         
         if joint_trajectory is None:
             rospy.logerr("Failed to convert Cartesian path to joint trajectory")
             return False
         
-        # Execute the trajectory
+                                
         rospy.loginfo("Executing trajectory...")
         
-        # Move through waypoints
+                                
         for i, joint_values in enumerate(joint_trajectory):
             rospy.loginfo(f"Moving to waypoint {i+1}/{len(joint_trajectory)}")
             self.group.set_joint_value_target(joint_values)
@@ -121,7 +121,7 @@ class CartesianToMoveItBridge:
         """
         waypoints = np.loadtxt(csv_file_path, delimiter=',', skiprows=1)
         
-        # Convert to Pose array for visualization
+                                                 
         pose_array = []
         for wp in waypoints:
             pose = Pose()
@@ -131,16 +131,16 @@ class CartesianToMoveItBridge:
             pose.orientation.w = 1.0
             pose_array.append(pose)
         
-        # Use MoveIt's compute_cartesian_path for visualization
+                                                               
         (plan, fraction) = self.group.compute_cartesian_path(
             pose_array,
-            0.01,  # 1cm step size
-            0.0    # jump threshold
+            0.01,                 
+            0.0                    
         )
         
         rospy.loginfo(f"Visualizing path (achieved {fraction*100}% of path)")
         
-        # Display in RViz
+                         
         self.group.execute(plan, wait=False)
 
 
@@ -204,12 +204,12 @@ def main():
     """
     bridge = CartesianToMoveItBridge()
     
-    # Add obstacles to planning scene (from your simulation)
-    # This should match the obstacles in your APF-RRT environment
-    # Example:
-    # bridge.scene.add_sphere("obstacle1", pose, radius=0.08)
+                                                            
+                                                                 
+              
+                                                             
     
-    # Execute the path from your APF-RRT planner
+                                                
     success = bridge.execute_apf_rrt_path("path_points_improved.csv")
     
     if success:

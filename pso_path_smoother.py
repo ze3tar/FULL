@@ -56,13 +56,13 @@ class PSOPathSmoother:
         self.collision_margin = collision_margin
         self.max_velocity = max_velocity
 
-        # Cost function weights
-        self.alpha_length = 1.0       # Path length weight
-        self.beta_smoothness = 0.5    # Smoothness weight
-        self.gamma_collision = 10.0   # Collision penalty weight
-        self.delta_joint_limit = 5.0  # Joint limit violation weight
-        self.epsilon_velocity = 2.0   # Max velocity constraint weight
-        self.zeta_curvature = 0.4     # Peak curvature penalty
+                               
+        self.alpha_length = 1.0                           
+        self.beta_smoothness = 0.5                       
+        self.gamma_collision = 10.0                             
+        self.delta_joint_limit = 5.0                                
+        self.epsilon_velocity = 2.0                                   
+        self.zeta_curvature = 0.4                             
     
     def smooth(
         self,
@@ -97,7 +97,7 @@ class PSOPathSmoother:
         n_waypoints, n_dims = path.shape
         
         if fixed_endpoints:
-            # Only optimize interior waypoints
+                                              
             optimize_indices = range(1, n_waypoints - 1)
             n_optimize = len(optimize_indices)
         else:
@@ -107,7 +107,7 @@ class PSOPathSmoother:
         if n_optimize == 0:
             return path, 0, {}
         
-        # Flatten path for optimization (only interior waypoints)
+                                                                 
         def path_to_vector(p):
             return p[optimize_indices].flatten()
         
@@ -116,7 +116,7 @@ class PSOPathSmoother:
             new_path[optimize_indices] = v.reshape(n_optimize, n_dims)
             return new_path
         
-        # Initialize particles
+                              
         particles: List[np.ndarray] = []
         velocities: List[np.ndarray] = []
         personal_best_positions: List[np.ndarray] = []
@@ -124,12 +124,12 @@ class PSOPathSmoother:
         trace: List[float] = []
         
         initial_vector = path_to_vector(path)
-        search_range = 0.25  # Search within ±25% of original positions
+        search_range = 0.25                                            
         
         for i in range(self.n_particles):
-            # Random perturbation around initial path
+                                                     
             if i == 0:
-                # First particle is the original path
+                                                     
                 particle = initial_vector.copy()
             else:
                 noise = np.random.uniform(-search_range, search_range, 
@@ -140,12 +140,12 @@ class PSOPathSmoother:
             velocities.append(np.zeros_like(particle))
             personal_best_positions.append(particle.copy())
             
-            # Evaluate initial cost
+                                   
             cost = self._evaluate_cost(vector_to_path(particle), 
                                       obstacles, joint_limits)
             personal_best_costs.append(cost)
         
-        # Initialize global best
+                                
         global_best_idx = np.argmin(personal_best_costs)
         global_best_position = personal_best_positions[global_best_idx].copy()
         global_best_cost = personal_best_costs[global_best_idx]
@@ -156,44 +156,44 @@ class PSOPathSmoother:
         
         start_time = time.time()
         
-        # PSO iterations
+                        
         for iteration in range(self.max_iters):
             for i in range(self.n_particles):
-                # Update velocity
+                                 
                 r1, r2 = np.random.random(2)
                 cognitive = self.c1 * r1 * (personal_best_positions[i] - particles[i])
                 social = self.c2 * r2 * (global_best_position - particles[i])
                 velocities[i] = self.w * velocities[i] + cognitive + social
                 
-                # Update position
+                                 
                 particles[i] += velocities[i]
                 
-                # Evaluate cost
+                               
                 current_path = vector_to_path(particles[i])
                 cost = self._evaluate_cost(current_path, obstacles, joint_limits)
                 
-                # Update personal best
+                                      
                 if cost < personal_best_costs[i]:
                     personal_best_costs[i] = cost
                     personal_best_positions[i] = particles[i].copy()
                     
-                    # Update global best
+                                        
                     if cost < global_best_cost:
                         global_best_cost = cost
                         global_best_position = particles[i].copy()
 
             trace.append(float(global_best_cost))
-            # Print progress
+                            
             if verbose and (iteration + 1) % 10 == 0:
                 print(f"Iteration {iteration+1}/{self.max_iters}: "
                       f"Best cost = {global_best_cost:.4f}")
         
         runtime = time.time() - start_time
         
-        # Construct final smoothed path
+                                       
         smoothed_path = vector_to_path(global_best_position)
         
-        # Compute metrics
+                         
         original_cost = self._evaluate_cost(path, obstacles, joint_limits)
         improvement = ((original_cost - global_best_cost) / (original_cost + 1e-9)) * 100
         
@@ -233,33 +233,33 @@ class PSOPathSmoother:
         """
         cost = 0
         
-        # 1. Path length
+                        
         length = self._compute_length(path)
         cost += self.alpha_length * length
         
-        # 2. Smoothness (curvature penalty)
+                                           
         smoothness_penalty = self._compute_smoothness(path)
         cost += self.beta_smoothness * smoothness_penalty
 
-        # 2b. Peak curvature term keeps endpoints gentle
+                                                        
         max_curvature = self._compute_max_curvature(path)
         cost += self.zeta_curvature * max_curvature
         
-        # 3. Collision penalty
+                              
         if obstacles is not None:
             collision_penalty = self._compute_collision_penalty(path, obstacles)
             cost += self.gamma_collision * collision_penalty
         
-        # 4. Joint limit violations
+                                   
         if joint_limits is not None:
             joint_penalty = self._compute_joint_limit_penalty(path, joint_limits)
             cost += self.delta_joint_limit * joint_penalty
         
-        # 5. Maximum velocity constraint
+                                        
         velocity_penalty = self._compute_velocity_penalty(path)
         cost += self.epsilon_velocity * velocity_penalty
 
-        # 6. Encourage clearance buffer
+                                       
         if obstacles is not None:
             clearance = self._compute_min_clearance(path, obstacles)
             if clearance < self.collision_margin:
@@ -283,15 +283,15 @@ class PSOPathSmoother:
         if len(path) < 3:
             return 0
         
-        # Compute angles between consecutive segments
+                                                     
         segments = np.diff(path, axis=0)
         
-        # Normalize segments
+                            
         norms = np.linalg.norm(segments, axis=1, keepdims=True)
-        norms = np.where(norms > 1e-6, norms, 1.0)  # Avoid division by zero
+        norms = np.where(norms > 1e-6, norms, 1.0)                          
         segments_normalized = segments / norms
         
-        # Compute angles (using dot product)
+                                            
         angles = []
         for i in range(len(segments_normalized) - 1):
             cos_angle = np.dot(segments_normalized[i], segments_normalized[i+1])
@@ -299,7 +299,7 @@ class PSOPathSmoother:
             angle = np.arccos(cos_angle)
             angles.append(angle)
         
-        # Smoothness penalty is sum of squared angles
+                                                     
         return np.sum(np.array(angles) ** 2)
 
     def _compute_max_curvature(self, path: np.ndarray) -> float:
@@ -328,20 +328,20 @@ class PSOPathSmoother:
         Penalizes waypoints that are too close to obstacles
         """
         penalty = 0
-        safety_margin = 1.0 + self.collision_margin  # Safety factor
+        safety_margin = 1.0 + self.collision_margin                 
         
         for waypoint in path:
             for obs_center, obs_radius in obstacles:
                 distance = np.linalg.norm(waypoint - obs_center) - obs_radius
                 
                 if distance < 0:
-                    # Inside obstacle - heavy penalty
+                                                     
                     penalty += 100 * abs(distance)
                 elif distance < obs_radius * safety_margin:
-                    # Too close - moderate penalty
+                                                  
                     penalty += (obs_radius * safety_margin - distance) ** 2
         
-        # Also sample along segments to catch near-misses between waypoints
+                                                                           
         if len(path) >= 2:
             dense_points = self._sample_along_path(path, samples_per_segment=4)
             for waypoint in dense_points:
@@ -388,11 +388,11 @@ class PSOPathSmoother:
         penalty = 0
         
         for q in path:
-            # Lower limit violations
+                                    
             violations_low = np.maximum(0, q_min - q)
             penalty += np.sum(violations_low ** 2)
             
-            # Upper limit violations
+                                    
             violations_high = np.maximum(0, q - q_max)
             penalty += np.sum(violations_high ** 2)
         
@@ -408,7 +408,7 @@ class PSOPathSmoother:
         velocities = np.diff(path, axis=0)
         velocity_magnitudes = np.linalg.norm(velocities, axis=1)
 
-        # Penalize velocities exceeding maximum
+                                               
         max_velocity = max_velocity or self.max_velocity
         excess_velocities = np.maximum(0, velocity_magnitudes - max_velocity)
         return np.sum(excess_velocities ** 2)
@@ -500,7 +500,7 @@ def visualize_smoothing(original_path, smoothed_path, obstacles=None, title="PSO
                 z = obs_center[2] + obs_radius * np.outer(np.ones(np.size(u)), np.cos(v))
                 ax.plot_surface(x, y, z, color='gray', alpha=0.25)
 
-    # Draw plots
+                
     if overlay:
         ax = axes[0]
         draw_obstacles(ax)
@@ -525,12 +525,12 @@ def visualize_smoothing(original_path, smoothed_path, obstacles=None, title="PSO
 if __name__ == "__main__":
     print("Testing PSO Path Smoother")
     
-    # Generate test path with some roughness
+                                            
     np.random.seed(42)
     n_waypoints = 10
-    n_dims = 6  # 6-DOF
+    n_dims = 6         
     
-    # Create a rough path
+                         
     t = np.linspace(0, 1, n_waypoints)
     smooth_base = np.column_stack([
         np.sin(2 * np.pi * t),
@@ -541,26 +541,26 @@ if __name__ == "__main__":
         1 - t
     ])
     
-    # Add noise to make it rough
+                                
     noise = np.random.normal(0, 0.1, smooth_base.shape)
     rough_path = smooth_base + noise
     
-    # Define obstacles
+                      
     obstacles = [
         (np.array([0.5, 0.5, 0.5, 0.0, 0.0, 0.5]), 0.3),
         (np.array([-0.3, 0.3, 0.3, 0.2, -0.2, 0.3]), 0.25)
     ]
     
-    # Define joint limits
+                         
     joint_limits = (
         np.array([-np.pi, -np.pi, -np.pi, -np.pi, -np.pi, -np.pi]),
         np.array([np.pi, np.pi, np.pi, np.pi, np.pi, np.pi])
     )
     
-    # Create smoother
+                     
     smoother = PSOPathSmoother(n_particles=30, max_iters=50)
     
-    # Smooth path
+                 
     smoothed_path, cost, metrics = smoother.smooth(
         rough_path, 
         obstacles=obstacles,
@@ -575,7 +575,7 @@ if __name__ == "__main__":
     for key, value in metrics.items():
         print(f"  {key}: {value}")
     
-    # Visualize (using first 3 dimensions)
+                                          
     visualize_smoothing(
         rough_path[:, :3],
         smoothed_path[:, :3],

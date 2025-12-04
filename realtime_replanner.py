@@ -41,9 +41,9 @@ class RealTimeReplanner:
         self.deviation_threshold = deviation_threshold
         self.latest_prediction: List[ObstacleState] = []
 
-    # ------------------------------------------------------------------
-    # Interfaces
-    # ------------------------------------------------------------------
+                                                                        
+                
+                                                                        
     def update_predictions(self, obstacles: Sequence[ObstacleState]) -> None:
         self.latest_prediction = [obs.copy() for obs in obstacles]
 
@@ -66,9 +66,9 @@ class RealTimeReplanner:
 
         return ReplanDecision(triggered=False, reason="stable")
 
-    # ------------------------------------------------------------------
-    # Planning pipeline
-    # ------------------------------------------------------------------
+                                                                        
+                       
+                                                                        
     def _replan(self, reason: str, start: np.ndarray, goal: np.ndarray, start_time: float) -> ReplanDecision:
         raw_path = self.planner(start, goal, self.latest_prediction)
         smooth_path, _, _ = self.smoother.smooth(raw_path, obstacles=self._to_spheres())
@@ -100,9 +100,9 @@ class RealTimeReplanner:
     def _to_spheres(self) -> List[Tuple[np.ndarray, float]]:
         return [(obs.position, obs.radius + self.collision_margin) for obs in self.latest_prediction]
 
-    # ------------------------------------------------------------------
-    # ROS helpers
-    # ------------------------------------------------------------------
+                                                                        
+                 
+                                                                        
     def publish_path_to_rviz(self, path: np.ndarray, frame_id: str = "map") -> None:
         """Publish a path to RViz without requiring callers to manage ROS boilerplate."""
 

@@ -1,17 +1,17 @@
 import unittest
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     import numpy as np
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    np = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    np = None                
     _NUMPY_ERROR = exc
 else:
     _NUMPY_ERROR = None
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     from rl_enhanced_apf_rrt import APFRRTEnv, PlannerParameters, ScenarioConfig
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    APFRRTEnv = PlannerParameters = ScenarioConfig = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    APFRRTEnv = PlannerParameters = ScenarioConfig = None                
     _RL_ERROR = exc
 else:
     _RL_ERROR = None

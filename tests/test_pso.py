@@ -1,17 +1,17 @@
 import unittest
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     import numpy as np
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    np = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    np = None                
     _NUMPY_ERROR = exc
 else:
     _NUMPY_ERROR = None
 
-try:  # pragma: no cover - optional dependency for lightweight CI
+try:                                                             
     from pso_path_smoother import PSOPathSmoother
-except ModuleNotFoundError as exc:  # pragma: no cover - handled via skip
-    PSOPathSmoother = None  # type: ignore
+except ModuleNotFoundError as exc:                                       
+    PSOPathSmoother = None                
     _PSO_ERROR = exc
 else:
     _PSO_ERROR = None
